@@ -1,9 +1,25 @@
-use graphene::{SgxQuote, SgxReport, SgxTargetInfo};
-use std::fs;
+use graphene::{ias::IasClient, SgxQuote, SgxReport, SgxTargetInfo};
+use std::{env, fs};
 
-pub fn main() {
+#[tokio::main]
+async fn main() {
     match graphene::is_graphene_enclave() {
-        false => println!("Executing outside of Graphene-SGX"),
+        false => {
+            println!("Executing outside of Graphene-SGX");
+            if std::path::Path::new("quote").exists() {
+                let ias = IasClient::new();
+                let quote = fs::read("quote").unwrap();
+                let ias_api_key = env::var("IAS_API_KEY");
+                match ias_api_key {
+                    Ok(key) => {
+                        let report = ias.verify_attestation_evidence(&quote, &key).await.unwrap();
+                        fs::write("ias-report", &report.bytes).unwrap();
+                        println!("IAS report: {:?}", &report);
+                    }
+                    Err(_) => println!("IAS_API_KEY variable not set"),
+                }
+            }
+        }
         true => {
             println!("Executing in Graphene SGX enclave");
 
@@ -22,8 +38,7 @@ pub fn main() {
             unsafe {
                 quote.display();
             }
-            //println!("Quote signature: {:02x?}", &quote.signature);
-            fs::write("quote", quote.bytes).unwrap();
+            fs::write("quote", &quote.bytes).unwrap();
         }
     }
 }
