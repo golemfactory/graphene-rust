@@ -4,6 +4,8 @@ pub use sgx_types::{sgx_quote_t, sgx_report_body_t, sgx_report_t, sgx_target_inf
 use std::io::{Cursor, Error, ErrorKind, Read, Result};
 use std::{fs, mem, path::Path};
 
+pub mod ias;
+
 const GRAPHENE_OWN_TARGET_INFO_PATH: &str = "/dev/attestation/my_target_info";
 const GRAPHENE_TARGET_INFO_PATH: &str = "/dev/attestation/target_info";
 const GRAPHENE_USER_DATA_PATH: &str = "/dev/attestation/user_report_data";
