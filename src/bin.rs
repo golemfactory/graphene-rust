@@ -13,8 +13,9 @@ async fn main() {
                 match ias_api_key {
                     Ok(key) => {
                         let report = ias.verify_attestation_evidence(&quote, &key).await.unwrap();
-                        fs::write("ias-report", &report.bytes).unwrap();
+                        fs::write("ias-report", &report.report).unwrap();
                         println!("IAS report: {:?}", &report);
+                        fs::write("ias-sig", &report.signature).unwrap();
                     }
                     Err(_) => println!("IAS_API_KEY variable not set"),
                 }
