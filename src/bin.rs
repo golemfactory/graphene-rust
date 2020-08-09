@@ -16,6 +16,9 @@ async fn main() {
                         fs::write("ias-report", &report.report).unwrap();
                         println!("IAS report: {:?}", &report);
                         fs::write("ias-sig", &report.signature).unwrap();
+                        let gid = [0x00, 0x00, 0x0b, 0x39];
+                        let sigrl = ias.get_sigrl(&gid, &key).await.unwrap();
+                        println!("SigRL for {:?}: {:?}", &gid, &sigrl);
                     }
                     Err(_) => println!("IAS_API_KEY variable not set"),
                 }
