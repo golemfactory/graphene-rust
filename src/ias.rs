@@ -1,18 +1,17 @@
+use anyhow::Result;
+use http::{header::ToStrError, Error as HttpError};
 use hyper::body::HttpBody as _;
 use hyper::header::HeaderMap;
-use hyper::{client::HttpConnector, Body, Client, Request};
+use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Write;
+pub use sgx_types::sgx_epid_group_id_t as SgxGid;
+use std::io::{Error as IoError, Write};
 
 const BASE_URI: &str = "https://api.trustedservices.intel.com/sgx/dev";
 const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
 const REPORT_PATH: &str = "/attestation/v4/report";
-
-pub struct IasClient {
-    https_client: Client<HttpsConnector<HttpConnector>>,
-}
 
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 pub enum AttestationError {
@@ -26,6 +25,46 @@ pub enum AttestationError {
     Encoding(String),
 }
 
+impl From<IoError> for AttestationError {
+    fn from(err: IoError) -> Self {
+        AttestationError::Transport(err.to_string())
+    }
+}
+
+impl From<HyperError> for AttestationError {
+    fn from(err: HyperError) -> Self {
+        AttestationError::Transport(err.to_string())
+    }
+}
+
+impl From<HttpError> for AttestationError {
+    fn from(err: HttpError) -> Self {
+        AttestationError::Transport(err.to_string())
+    }
+}
+
+impl From<ToStrError> for AttestationError {
+    fn from(err: ToStrError) -> Self {
+        AttestationError::Encoding(err.to_string())
+    }
+}
+
+impl From<serde_json::Error> for AttestationError {
+    fn from(err: serde_json::Error) -> Self {
+        AttestationError::Encoding(err.to_string())
+    }
+}
+
+impl From<u16> for AttestationError {
+    fn from(response_code: u16) -> Self {
+        AttestationError::IAS(response_code)
+    }
+}
+
+pub struct IasClient {
+    https_client: Client<HttpsConnector<HttpConnector>>,
+}
+
 impl IasClient {
     pub fn new() -> Self {
         Self {
@@ -33,11 +72,56 @@ impl IasClient {
         }
     }
 
+    /// Get signature revocation list for a given EPID group ID.
+    pub async fn get_sigrl(
+        &self,
+        gid: &SgxGid,
+        api_key: &str,
+    ) -> Result<Option<Vec<u8>>, AttestationError> {
+        let uri = format!(
+            "{}{}{:02x}{:02x}{:02x}{:02x}",
+            BASE_URI, SIGRL_PATH, gid[0], gid[1], gid[2], gid[3]
+        );
+
+        let req = Request::get(uri)
+            .header("Ocp-Apim-Subscription-Key", api_key)
+            .body(Body::empty())?;
+
+        let mut resp = self.https_client.request(req).await?;
+
+        match resp.status().as_u16() {
+            200 => (),
+            //404 => return Ok(None), // this actually means that there is no such gid
+            _ => return Err(resp.status().as_u16().into()),
+        }
+
+        match resp.headers().get("content-length") {
+            None => {
+                return Err(AttestationError::InvalidResponse(
+                    "Missing content-length".to_string(),
+                ))
+            }
+            Some(val) => {
+                if val == "0" {
+                    return Ok(None); // no sigrl for this gid
+                }
+            }
+        }
+
+        let mut sigrl = Vec::new();
+        while let Some(chunk) = resp.body_mut().data().await {
+            sigrl.write_all(&chunk?)?;
+        }
+
+        Ok(Some(sigrl))
+    }
+
+    /// Get IAS verification report and signature for an SGX enclave quote.
     pub async fn verify_attestation_evidence(
         &self,
         quote: &[u8],
         api_key: &str,
-    ) -> anyhow::Result<AttestationResponse, AttestationError> {
+    ) -> Result<AttestationResponse, AttestationError> {
         let uri = format!("{}{}", BASE_URI, REPORT_PATH);
         let quote_base64 = base64::encode(&quote);
         let body = format!("{{\"isvEnclaveQuote\":\"{}\"}}", quote_base64);
@@ -45,24 +129,17 @@ impl IasClient {
         let req = Request::post(uri)
             .header("Content-type", "application/json")
             .header("Ocp-Apim-Subscription-Key", api_key)
-            .body(Body::from(body))
-            .map_err(|err| AttestationError::Transport(err.to_string()))?;
+            .body(Body::from(body))?;
 
-        let mut resp = self
-            .https_client
-            .request(req)
-            .await
-            .map_err(|err| AttestationError::Transport(err.to_string()))?;
+        let mut resp = self.https_client.request(req).await?;
 
         if resp.status().as_u16() != 200 {
-            return Err(AttestationError::IAS(resp.status().as_u16()));
+            return Err(resp.status().as_u16().into());
         }
 
         let mut body = Vec::new();
         while let Some(chunk) = resp.body_mut().data().await {
-            body.write_all(&chunk.unwrap()).map_err(|_| {
-                AttestationError::Transport("Failed to collect HTTP body chunks".to_string())
-            })?;
+            body.write_all(&chunk?)?;
         }
 
         AttestationResponse::from_response(resp.headers(), body)
@@ -98,11 +175,7 @@ fn unwrap_header(
     mandatory: bool,
 ) -> Result<Option<String>, AttestationError> {
     match headers.get(header_name) {
-        Some(val) => Ok(Some(
-            val.to_str()
-                .map_err(|err| AttestationError::Encoding(err.to_string()))?
-                .to_owned(),
-        )),
+        Some(val) => Ok(Some(val.to_str()?.to_owned())),
         None => {
             if mandatory {
                 Err(AttestationError::InvalidResponse(format!(
@@ -133,11 +206,10 @@ fn unwrap_body(val: &Value, mandatory: bool) -> Result<Option<String>, Attestati
 }
 
 impl AttestationResponse {
-    fn from_response(headers: &HeaderMap, body: Vec<u8>) -> anyhow::Result<Self, AttestationError> {
+    fn from_response(headers: &HeaderMap, body: Vec<u8>) -> Result<Self, AttestationError> {
         let report_raw = body.to_owned();
 
-        let body: Value = serde_json::from_slice(&body)
-            .map_err(|err| AttestationError::Encoding(err.to_string()))?;
+        let body: Value = serde_json::from_slice(&body)?;
 
         Ok(Self {
             // header
