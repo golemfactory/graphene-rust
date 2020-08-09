@@ -28,20 +28,15 @@ async fn main() {
             println!("Executing in Graphene SGX enclave");
 
             let target_info = SgxTargetInfo::new().unwrap();
-            println!("\nOur target_info:");
-            target_info.display();
+            println!("\nOur target_info: {}", target_info);
 
             let user_data = &[0xde, 0xad, 0xc0, 0xde];
 
             let report = SgxReport::new(&target_info.bytes, user_data).unwrap();
-            println!("\nOur report targeted to ourself:");
-            report.display();
+            println!("\nOur report targeted to ourself: {}", report);
 
             let quote = SgxQuote::new(user_data).unwrap();
-            println!("\nOur quote:");
-            unsafe {
-                quote.display();
-            }
+            println!("\nOur quote: {}", quote);
             fs::write("quote", &quote.bytes).unwrap();
         }
     }

@@ -2,7 +2,11 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use hex;
 pub use sgx_types::{sgx_quote_t, sgx_report_body_t, sgx_report_t, sgx_target_info_t};
 use std::io::{Cursor, Error, ErrorKind, Read, Result};
-use std::{fs, mem, path::Path};
+use std::{
+    fmt::{self, Display, Formatter},
+    fs, mem,
+    path::Path,
+};
 
 pub mod ias;
 
@@ -22,6 +26,38 @@ pub fn is_graphene_enclave() -> bool {
 pub struct SgxTargetInfo {
     pub bytes: Vec<u8>,
     pub target_info: sgx_target_info_t,
+}
+
+impl Display for SgxTargetInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "")?;
+        writeln!(
+            f,
+            "mr_enclave       : {}",
+            hex::encode(self.target_info.mr_enclave.m)
+        )?;
+        writeln!(
+            f,
+            "attributes.flags : {:02x}",
+            self.target_info.attributes.flags
+        )?;
+        writeln!(
+            f,
+            "attributes.xfrm  : {:02x}",
+            self.target_info.attributes.xfrm
+        )?;
+        //writeln!(f, "reserved1        : {}", hex::encode(&info.reserved1))?;
+        writeln!(f, "config_svn       : {:02x}", self.target_info.config_svn)?;
+        writeln!(f, "misc_select      : {:02x}", self.target_info.misc_select)?;
+        //writeln!(f, "reserved2        : {}", hex::encode(&info.reserved2))?;
+        writeln!(
+            f,
+            "config_id        : {}",
+            hex::encode(&self.target_info.config_id[..])
+        )?;
+        //writeln!(f, "reserved3        : {}", hex::encode(&info.reserved3[..]))?;
+        Ok(())
+    }
 }
 
 impl SgxTargetInfo {
@@ -54,30 +90,38 @@ impl SgxTargetInfo {
             bytes: bytes,
         })
     }
+}
 
-    pub fn display(&self) {
-        println!(
-            " mr_enclave       : {}",
-            hex::encode(self.target_info.mr_enclave.m)
-        );
-        println!(
-            " attributes.flags : {:02x}",
-            self.target_info.attributes.flags
-        );
-        println!(
-            " attributes.xfrm  : {:02x}",
-            self.target_info.attributes.xfrm
-        );
-        //println!(" reserved1        : {}", hex::encode(&info.reserved1));
-        println!(" config_svn       : {:02x}", self.target_info.config_svn);
-        println!(" misc_select      : {:02x}", self.target_info.misc_select);
-        //println!(" reserved2        : {}", hex::encode(&info.reserved2));
-        println!(
-            " config_id        : {}",
-            hex::encode(&self.target_info.config_id[..])
-        );
-        //println!(" reserved3        : {}", hex::encode(&info.reserved3[..]));
-    }
+fn format_report_body(body: &sgx_report_body_t, f: &mut Formatter<'_>) -> fmt::Result {
+    writeln!(f, " cpu_svn          : {}", hex::encode(body.cpu_svn.svn))?;
+    writeln!(f, " misc_select      : {:02x}", body.misc_select)?;
+    //writeln!(f, " reserved1        : {:02x?}", body.reserved1)?;
+    writeln!(
+        f,
+        " isv_ext_prod_id  : {}",
+        hex::encode(body.isv_ext_prod_id)
+    )?;
+    writeln!(f, " attributes.flags : {:02x}", body.attributes.flags)?;
+    writeln!(f, " attributes.xfrm  : {:02x}", body.attributes.xfrm)?;
+    writeln!(f, " mr_enclave       : {}", hex::encode(body.mr_enclave.m))?;
+    //writeln!(f, " reserved2        : {}", hex::encode(body.reserved2))?;
+    writeln!(f, " mr_signer        : {}", hex::encode(body.mr_signer.m))?;
+    //writeln!(f, " reserved3        : {}", hex::encode(body.reserved3))?;
+    writeln!(
+        f,
+        " config_id        : {}",
+        hex::encode(&body.config_id[..])
+    )?;
+    writeln!(f, " isv_prod_id      : {:02x}", body.isv_prod_id)?;
+    writeln!(f, " isv_svn          : {:02x}", body.isv_svn)?;
+    writeln!(f, " config_svn       : {:02x}", body.config_svn)?;
+    //writeln!(f, " reserved4        : {}", hex::encode(&body.reserved4[..]))?;
+    writeln!(f, " isv_family_id    : {}", hex::encode(body.isv_family_id))?;
+    writeln!(
+        f,
+        " report_data      : {}",
+        hex::encode(&body.report_data.d[..])
+    )
 }
 
 fn read_report_body<T: Read>(reader: &mut T) -> Result<sgx_report_body_t> {
@@ -104,29 +148,6 @@ fn read_report_body<T: Read>(reader: &mut T) -> Result<sgx_report_body_t> {
     Ok(body)
 }
 
-pub fn display_report_body(body: &sgx_report_body_t) {
-    println!(" cpu_svn          : {}", hex::encode(&body.cpu_svn.svn));
-    println!(" misc_select      : {:02x}", &body.misc_select);
-    //println!(" reserved1        : {:02x?}", &body.reserved1);
-    println!(" isv_ext_prod_id  : {}", hex::encode(&body.isv_ext_prod_id));
-    println!(" attributes.flags : {:02x}", &body.attributes.flags);
-    println!(" attributes.xfrm  : {:02x}", &body.attributes.xfrm);
-    println!(" mr_enclave       : {}", hex::encode(&body.mr_enclave.m));
-    //println!(" reserved2        : {}", hex::encode(&body.reserved2));
-    println!(" mr_signer        : {}", hex::encode(&body.mr_signer.m));
-    //println!(" reserved3        : {}", hex::encode(&body.reserved3));
-    println!(" config_id        : {}", hex::encode(&body.config_id[..]));
-    println!(" isv_prod_id      : {:02x}", &body.isv_prod_id);
-    println!(" isv_svn          : {:02x}", &body.isv_svn);
-    println!(" config_svn       : {:02x}", &body.config_svn);
-    //println!(" reserved4        : {}", hex::encode(&body.reserved4[..]));
-    println!(" isv_family_id    : {}", hex::encode(&body.isv_family_id));
-    println!(
-        " report_data      : {}",
-        hex::encode(&body.report_data.d[..])
-    );
-}
-
 fn expand_report_data(user_data: &[u8]) -> Result<[u8; 64]> {
     let user_data_len = user_data.len();
     if user_data_len > 64 {
@@ -143,13 +164,20 @@ pub struct SgxReport {
     pub report: sgx_report_t,
 }
 
-impl SgxReport {
-    pub fn display(&self) {
-        display_report_body(&self.report.body);
-        println!(" key_id           : {}", hex::encode(self.report.key_id.id));
-        println!(" mac              : {}", hex::encode(self.report.mac));
+impl Display for SgxReport {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "")?;
+        format_report_body(&self.report.body, f)?;
+        writeln!(
+            f,
+            " key_id           : {}",
+            hex::encode(self.report.key_id.id)
+        )?;
+        writeln!(f, " mac              : {}", hex::encode(self.report.mac))
     }
+}
 
+impl SgxReport {
     fn read_bytes(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Vec<u8>> {
         if target_info_bytes.len() != mem::size_of::<sgx_target_info_t>() {
             return Err(Error::from(ErrorKind::InvalidInput));
@@ -186,6 +214,32 @@ pub struct SgxQuote {
     pub bytes: Vec<u8>, // the whole quote including signature, serialized
     pub quote: sgx_quote_t,
     pub signature: Vec<u8>,
+}
+
+impl Display for SgxQuote {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "")?;
+        unsafe {
+            writeln!(f, "version           : {:02x}", self.quote.version)?;
+            writeln!(f, "sign_type         : {:02x}", self.quote.sign_type)?;
+            writeln!(
+                f,
+                "epid_group_id     : {}",
+                hex::encode(self.quote.epid_group_id)
+            )?;
+            writeln!(f, "qe_svn            : {:02x}", self.quote.qe_svn)?;
+            writeln!(f, "pce_svn           : {:02x}", self.quote.pce_svn)?;
+            writeln!(f, "xeid              : {:04x}", self.quote.xeid)?;
+            writeln!(
+                f,
+                "basename          : {}",
+                hex::encode(self.quote.basename.name)
+            )?;
+            writeln!(f, "report_body       :")?;
+            format_report_body(&self.quote.report_body, f)?;
+            writeln!(f, "signature_len     : {:04x}", self.quote.signature_len)
+        }
+    }
 }
 
 impl SgxQuote {
@@ -234,25 +288,6 @@ impl SgxQuote {
             quote: quote,
             signature: sig,
         })
-    }
-
-    pub unsafe fn display(&self) {
-        println!("version           : {:02x}", self.quote.version);
-        println!("sign_type         : {:02x}", self.quote.sign_type);
-        println!(
-            "epid_group_id     : {}",
-            hex::encode(self.quote.epid_group_id)
-        );
-        println!("qe_svn            : {:02x}", self.quote.qe_svn);
-        println!("pce_svn           : {:02x}", self.quote.pce_svn);
-        println!("xeid              : {:04x}", self.quote.xeid);
-        println!(
-            "basename          : {}",
-            hex::encode(self.quote.basename.name)
-        );
-        println!("report_body       :");
-        display_report_body(&self.quote.report_body);
-        println!("signature_len     : {:04x}", self.quote.signature_len);
     }
 }
 
