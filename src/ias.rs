@@ -7,6 +7,7 @@ use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use sgx_types::sgx_epid_group_id_t as SgxGid;
+use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
 
 const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
@@ -167,13 +168,15 @@ impl IasClient {
     }
 }
 
+/// Raw bytes of IAS report and signature
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AttestationResponse {
-    // header
-    pub advisory_url: Option<String>,
-    pub advisory_ids: Option<String>,
-    pub request_id: String,
-    // body
+    pub report: Vec<u8>,
+    pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AttestationReport {
     pub id: String,
     pub timestamp: String,
     pub version: u16,
@@ -185,9 +188,54 @@ pub struct AttestationResponse {
     pub platform_info_blob: Option<String>,
     pub nonce: Option<String>,
     pub epid_pseudonym: Option<String>,
-    // raw bytes
-    pub signature: Vec<u8>,
-    pub report: Vec<u8>,
+    pub advisory_url: Option<String>,
+    pub advisory_ids: Option<Vec<String>>,
+}
+
+fn unwrap_array(val: &Value) -> Result<Option<Vec<String>>, AttestationError> {
+    match val.as_array() {
+        None => Ok(None),
+        Some(val) => {
+            let mut rv = Vec::<String>::new();
+            for el in val {
+                match el.as_str() {
+                    None => {
+                        return Err(AttestationError::InvalidResponse(format!(
+                            "missing report field: '{:?}'",
+                            val
+                        )))
+                    }
+                    Some(x) => rv.push(x.to_owned()),
+                }
+            }
+            Ok(Some(rv))
+        }
+    }
+}
+
+impl TryFrom<AttestationResponse> for AttestationReport {
+    type Error = AttestationError;
+
+    fn try_from(raw: AttestationResponse) -> Result<Self, AttestationError> {
+        let body: Value = serde_json::from_slice(&raw.report)?;
+        Ok(AttestationReport {
+            id: unwrap_body(&body["id"], true)?.unwrap(),
+            timestamp: unwrap_body(&body["timestamp"], true)?.unwrap(),
+            version: body["version"].as_u64().map(|x| x as u16).ok_or(
+                AttestationError::InvalidResponse("missing report field: 'version'".to_string()),
+            )?,
+            isv_enclave_quote_status: unwrap_body(&body["isvEnclaveQuoteStatus"], true)?.unwrap(),
+            isv_enclave_quote_body: unwrap_body(&body["isvEnclaveQuoteBody"], true)?.unwrap(),
+            revocation_reason: unwrap_body(&body["revocationReason"], false)?,
+            pse_manifest_status: unwrap_body(&body["pseManifestStatus"], false)?,
+            pse_manifest_hash: unwrap_body(&body["pseManifestHash"], false)?,
+            platform_info_blob: unwrap_body(&body["platformInfoBlob"], false)?,
+            nonce: unwrap_body(&body["nonce"], false)?,
+            epid_pseudonym: unwrap_body(&body["epidPseudonym"], false)?,
+            advisory_url: unwrap_body(&body["advisoryURL"], false)?,
+            advisory_ids: unwrap_array(&body["advisoryIDs"])?,
+        })
+    }
 }
 
 fn unwrap_header(
@@ -228,34 +276,12 @@ fn unwrap_body(val: &Value, mandatory: bool) -> Result<Option<String>, Attestati
 
 impl AttestationResponse {
     fn from_response(headers: &HeaderMap, body: Vec<u8>) -> Result<Self, AttestationError> {
-        let report_raw = body.to_owned();
-
-        let body: Value = serde_json::from_slice(&body)?;
-
         Ok(Self {
-            // header
-            advisory_ids: unwrap_header(headers, "advisory-ids", false)?,
-            advisory_url: unwrap_header(headers, "advisory-url", false)?,
-            request_id: unwrap_header(headers, "request-id", true)?.unwrap(),
+            report: body,
             signature: base64::decode(
                 &unwrap_header(headers, "x-iasreport-signature", true)?.unwrap(),
             )
             .map_err(|err| AttestationError::Encoding(err.to_string()))?,
-            // body
-            id: unwrap_body(&body["id"], true)?.unwrap(),
-            timestamp: unwrap_body(&body["timestamp"], true)?.unwrap(),
-            version: body["version"].as_u64().map(|x| x as u16).ok_or(
-                AttestationError::InvalidResponse("missing report field: 'version'".to_string()),
-            )?,
-            isv_enclave_quote_status: unwrap_body(&body["isvEnclaveQuoteStatus"], true)?.unwrap(),
-            isv_enclave_quote_body: unwrap_body(&body["isvEnclaveQuoteBody"], true)?.unwrap(),
-            revocation_reason: unwrap_body(&body["revocationReason"], false)?,
-            pse_manifest_status: unwrap_body(&body["pseManifestStatus"], false)?,
-            pse_manifest_hash: unwrap_body(&body["pseManifestHash"], false)?,
-            platform_info_blob: unwrap_body(&body["platformInfoBlob"], false)?,
-            nonce: unwrap_body(&body["nonce"], false)?,
-            epid_pseudonym: unwrap_body(&body["epidPseudonym"], false)?,
-            report: report_raw,
         })
     }
 }

@@ -1,5 +1,8 @@
-use graphene::{ias::IasClient, SgxQuote, SgxReport, SgxTargetInfo};
-use std::{env, fs};
+use graphene::{
+    ias::{AttestationReport, IasClient},
+    SgxQuote, SgxReport, SgxTargetInfo,
+};
+use std::{convert::TryFrom, env, fs};
 
 #[tokio::main]
 async fn main() {
@@ -12,10 +15,11 @@ async fn main() {
                 let ias_api_key = env::var("IAS_API_KEY");
                 match ias_api_key {
                     Ok(key) => {
-                        let report = ias.verify_attestation_evidence(&quote, &key).await.unwrap();
-                        fs::write("ias-report", &report.report).unwrap();
+                        let response = ias.verify_attestation_evidence(&quote, &key).await.unwrap();
+                        fs::write("ias-report", &response.report).unwrap();
+                        fs::write("ias-sig", &response.signature).unwrap();
+                        let report = AttestationReport::try_from(response).unwrap();
                         println!("IAS report: {:?}", &report);
-                        fs::write("ias-sig", &report.signature).unwrap();
                         let gid = [0x00, 0x00, 0x0b, 0x39];
                         let sigrl = ias.get_sigrl(&gid, &key).await.unwrap();
                         println!("SigRL for {:?}: {:?}", &gid, &sigrl);
