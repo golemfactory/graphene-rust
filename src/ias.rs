@@ -9,7 +9,8 @@ use serde_json::Value;
 pub use sgx_types::sgx_epid_group_id_t as SgxGid;
 use std::io::{Error as IoError, Write};
 
-const BASE_URI: &str = "https://api.trustedservices.intel.com/sgx/dev";
+const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
+const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
 const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
 const REPORT_PATH: &str = "/attestation/v4/report";
 
@@ -63,13 +64,29 @@ impl From<u16> for AttestationError {
 
 pub struct IasClient {
     https_client: Client<HttpsConnector<HttpConnector>>,
+    production: bool,
 }
 
 impl IasClient {
-    pub fn new() -> Self {
+    /// Initialize IAS client.
+    /// If `production` is true, use production API endpoints.
+    pub fn new(production: bool) -> Self {
         Self {
             https_client: Client::builder().build::<_, hyper::Body>(HttpsConnector::new()),
+            production: production,
         }
+    }
+
+    fn uri(&self, suffix: &str) -> String {
+        format!(
+            "{}{}",
+            if self.production {
+                BASE_URI_PROD
+            } else {
+                BASE_URI_DEV
+            },
+            suffix
+        )
     }
 
     /// Get signature revocation list for a given EPID group ID.
@@ -79,8 +96,12 @@ impl IasClient {
         api_key: &str,
     ) -> Result<Option<Vec<u8>>, AttestationError> {
         let uri = format!(
-            "{}{}{:02x}{:02x}{:02x}{:02x}",
-            BASE_URI, SIGRL_PATH, gid[0], gid[1], gid[2], gid[3]
+            "{}{:02x}{:02x}{:02x}{:02x}",
+            self.uri(SIGRL_PATH),
+            gid[0],
+            gid[1],
+            gid[2],
+            gid[3]
         );
 
         let req = Request::get(uri)
@@ -122,7 +143,7 @@ impl IasClient {
         quote: &[u8],
         api_key: &str,
     ) -> Result<AttestationResponse, AttestationError> {
-        let uri = format!("{}{}", BASE_URI, REPORT_PATH);
+        let uri = self.uri(REPORT_PATH);
         let quote_base64 = base64::encode(&quote);
         let body = format!("{{\"isvEnclaveQuote\":\"{}\"}}", quote_base64);
 

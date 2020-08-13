@@ -7,7 +7,7 @@ async fn main() {
         false => {
             println!("Executing outside of Graphene-SGX");
             if std::path::Path::new("quote").exists() {
-                let ias = IasClient::new();
+                let ias = IasClient::new(false);
                 let quote = fs::read("quote").unwrap();
                 let ias_api_key = env::var("IAS_API_KEY");
                 match ias_api_key {
