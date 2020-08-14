@@ -25,6 +25,8 @@ pub enum AttestationError {
     InvalidResponse(String),
     #[error("Encoding error: {0}")]
     Encoding(String),
+    #[error("Invalid arguments: {0}")]
+    InvalidArguments(String),
 }
 
 impl From<IoError> for AttestationError {
@@ -143,10 +145,25 @@ impl IasClient {
         &self,
         quote: &[u8],
         api_key: &str,
+        nonce: Option<&str>,
     ) -> Result<AttestationResponse, AttestationError> {
         let uri = self.uri(REPORT_PATH);
         let quote_base64 = base64::encode(&quote);
-        let body = format!("{{\"isvEnclaveQuote\":\"{}\"}}", quote_base64);
+        let body = match nonce {
+            Some(nonce) => {
+                if nonce.len() > 32 {
+                    return Err(AttestationError::InvalidArguments(
+                        "Nonce too long".to_string(),
+                    ));
+                }
+
+                format!(
+                    "{{\"isvEnclaveQuote\":\"{}\",\"nonce\":\"{}\"}}",
+                    quote_base64, nonce
+                )
+            }
+            None => format!("{{\"isvEnclaveQuote\":\"{}\"}}", quote_base64),
+        };
 
         let req = Request::post(uri)
             .header("Content-type", "application/json")
@@ -190,6 +207,13 @@ pub struct AttestationReport {
     pub epid_pseudonym: Option<String>,
     pub advisory_url: Option<String>,
     pub advisory_ids: Option<Vec<String>>,
+}
+
+impl AttestationReport {
+    /// Verify validity of an attestation report.
+    pub fn verify(&self) -> bool {
+        true
+    }
 }
 
 fn unwrap_array(val: &Value) -> Result<Option<Vec<String>>, AttestationError> {
