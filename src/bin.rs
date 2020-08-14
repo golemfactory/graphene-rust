@@ -15,7 +15,10 @@ async fn main() {
                 let ias_api_key = env::var("IAS_API_KEY");
                 match ias_api_key {
                     Ok(key) => {
-                        let response = ias.verify_attestation_evidence(&quote, &key).await.unwrap();
+                        let response = ias
+                            .verify_attestation_evidence(&quote, &key, Some("test nonce"))
+                            .await
+                            .unwrap();
                         fs::write("ias-report", &response.report).unwrap();
                         fs::write("ias-sig", &response.signature).unwrap();
                         let report = AttestationReport::try_from(response).unwrap();
