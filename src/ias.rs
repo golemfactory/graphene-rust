@@ -6,9 +6,11 @@ use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use sgx_types::sgx_epid_group_id_t as SgxGid;
+pub use sgx_types::{sgx_epid_group_id_t as SgxGid, sgx_measurement_t};
 use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
+
+use crate::SgxQuote;
 
 const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
 const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
@@ -56,6 +58,12 @@ impl From<ToStrError> for AttestationError {
 impl From<serde_json::Error> for AttestationError {
     fn from(err: serde_json::Error) -> Self {
         AttestationError::Encoding(err.to_string())
+    }
+}
+
+impl From<base64::DecodeError> for AttestationError {
+    fn from(err: base64::DecodeError) -> Self {
+        AttestationError::InvalidResponse(err.to_string())
     }
 }
 
@@ -145,7 +153,7 @@ impl IasClient {
         &self,
         quote: &[u8],
         api_key: &str,
-        nonce: Option<&str>,
+        nonce: Option<String>,
     ) -> Result<AttestationResponse, AttestationError> {
         let uri = self.uri(REPORT_PATH);
         let quote_base64 = base64::encode(&quote);
@@ -210,9 +218,63 @@ pub struct AttestationReport {
 }
 
 impl AttestationReport {
-    /// Verify validity of an attestation report.
-    pub fn verify(&self) -> bool {
-        true
+    /// Verify contents of an attestation report.
+    pub fn verify(
+        &self,
+        allow_outdated: bool,
+        nonce: Option<String>,
+        report_data: Option<&[u8]>,
+        mrenclave: Option<sgx_measurement_t>,
+        mrsigner: Option<sgx_measurement_t>,
+        isv_prod_id: Option<u16>,
+        isv_svn: Option<u16>,
+    ) -> Result<bool, AttestationError> {
+        let quote = SgxQuote::from_bytes(base64::decode(&self.isv_enclave_quote_body)?)?;
+
+        if !self.isv_enclave_quote_status.eq_ignore_ascii_case("OK")
+            && !(allow_outdated
+                && self
+                    .isv_enclave_quote_status
+                    .eq_ignore_ascii_case("GROUP_OUT_OF_DATE"))
+        {
+            return Ok(false);
+        }
+
+        if self.nonce.as_deref() != nonce.as_deref() {
+            return Ok(false);
+        }
+
+        if let Some(user_data) = report_data {
+            if !quote.quote.report_body.report_data.d.starts_with(user_data) {
+                return Ok(false);
+            }
+        }
+
+        if let Some(mr) = mrenclave {
+            if mr.m != quote.quote.report_body.mr_enclave.m {
+                return Ok(false);
+            }
+        }
+
+        if let Some(mr) = mrsigner {
+            if mr.m != quote.quote.report_body.mr_signer.m {
+                return Ok(false);
+            }
+        }
+
+        if let Some(id) = isv_prod_id {
+            if id != quote.quote.report_body.isv_prod_id {
+                return Ok(false);
+            }
+        }
+
+        if let Some(svn) = isv_svn {
+            if svn != quote.quote.report_body.isv_svn {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
     }
 }
 

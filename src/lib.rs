@@ -1,6 +1,8 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use hex;
-pub use sgx_types::{sgx_quote_t, sgx_report_body_t, sgx_report_t, sgx_target_info_t};
+pub use sgx_types::{
+    sgx_measurement_t, sgx_quote_t, sgx_report_body_t, sgx_report_t, sgx_target_info_t,
+};
 use std::io::{Cursor, Error, ErrorKind, Read, Result};
 use std::{
     fmt::{self, Display, Formatter},
@@ -211,9 +213,9 @@ impl SgxReport {
 }
 
 pub struct SgxQuote {
-    pub bytes: Vec<u8>, // the whole quote including signature, serialized
+    pub bytes: Vec<u8>, // the whole quote including signature (if present), serialized
     pub quote: sgx_quote_t,
-    pub signature: Vec<u8>,
+    pub signature: Option<Vec<u8>>,
 }
 
 impl Display for SgxQuote {
@@ -251,19 +253,20 @@ impl SgxQuote {
         Ok(fs::read(GRAPHENE_QUOTE_PATH)?)
     }
 
-    /// Get SGX quote of the currently executing enclave.
-    /// `user_data` will be included in the quote's `report_data` field (max 64 bytes,
-    /// will be padded with zeros if shorter).
-    pub fn new(user_data: &[u8]) -> Result<SgxQuote> {
-        let quote_bytes = SgxQuote::read_bytes(user_data)?;
-        let bytes = quote_bytes.clone();
-        let quote_size = quote_bytes.len();
+    /// Parses raw quote bytes into `SgxQuote`.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        let quote_size = bytes.len();
+        let quote_bytes = bytes.clone();
 
-        if quote_size < mem::size_of::<sgx_quote_t>() {
+        // `sgx_quote_t` is packed so we can do the math below.
+        // IAS quotes lack the `signature_len` and `signature` fields, `signature_len` is u32.
+        let min_size = mem::size_of::<sgx_quote_t>() - mem::size_of::<u32>();
+
+        if quote_size < min_size {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
-        let mut reader = Cursor::new(quote_bytes);
+        let mut reader = Cursor::new(bytes);
         let mut quote = sgx_quote_t::default();
 
         quote.version = reader.read_u16::<LittleEndian>()?;
@@ -274,20 +277,40 @@ impl SgxQuote {
         quote.xeid = reader.read_u32::<LittleEndian>()?;
         reader.read_exact(&mut quote.basename.name)?;
         quote.report_body = read_report_body(&mut reader)?;
-        quote.signature_len = reader.read_u32::<LittleEndian>()?;
 
-        if quote_size != mem::size_of::<sgx_quote_t>() + quote.signature_len as usize {
-            return Err(Error::from(ErrorKind::InvalidData));
+        if quote_size == min_size {
+            // IAS quote, no signature
+            quote.signature_len = 0;
+            return Ok(SgxQuote {
+                bytes: quote_bytes,
+                quote: quote,
+                signature: None,
+            });
+        } else {
+            quote.signature_len = reader.read_u32::<LittleEndian>()?;
+
+            if quote_size != mem::size_of::<sgx_quote_t>() + quote.signature_len as usize {
+                return Err(Error::from(ErrorKind::InvalidData));
+            }
+
+            let mut sig = vec![0; quote.signature_len as usize];
+            reader.read_exact(&mut sig)?;
+            Ok(SgxQuote {
+                bytes: quote_bytes,
+                quote: quote,
+                signature: Some(sig),
+            })
         }
+    }
 
-        let mut sig = vec![0; quote.signature_len as usize];
-        reader.read_exact(&mut sig)?;
+    /// Get SGX quote of the currently executing enclave.
+    /// `user_data` will be included in the quote's `report_data` field (max 64 bytes,
+    /// will be padded with zeros if shorter).
+    pub fn new(user_data: &[u8]) -> Result<SgxQuote> {
+        let quote_bytes = SgxQuote::read_bytes(user_data)?;
+        let bytes = quote_bytes.clone();
 
-        Ok(SgxQuote {
-            bytes: bytes,
-            quote: quote,
-            signature: sig,
-        })
+        SgxQuote::from_bytes(bytes)
     }
 }
 
