@@ -4,6 +4,7 @@ use hyper::body::HttpBody as _;
 use hyper::header::HeaderMap;
 use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
+use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use sgx_types::{sgx_epid_group_id_t as SgxGid, sgx_measurement_t};
@@ -17,6 +18,18 @@ const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
 const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
 const REPORT_PATH: &str = "/attestation/v4/report";
 
+const IAS_PUBLIC_KEY_PEM: &str = r#"
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqXot4OZuphR8nudFrAFi
+aGxxkgma/Es/BA+tbeCTUR106AL1ENcWA4FX3K+E9BBL0/7X5rj5nIgX/R/1ubhk
+KWw9gfqPG3KeAtIdcv/uTO1yXv50vqaPvE1CRChvzdS/ZEBqQ5oVvLTPZ3VEicQj
+lytKgN9cLnxbwtuvLUK7eyRPfJW/ksddOzP8VBBniolYnRCD2jrMRZ8nBM2ZWYwn
+XnwYeOAHV+W9tOhAImwRwKF/95yAsVwd21ryHMJBcGH70qLagZ7Ttyt++qO/6+KA
+XJuKwZqjRlEtSEz8gZQeFfVYgcwSfo96oSMAzVr7V0L6HSDLRnpb6xxmbPdqNol4
+tQIDAQAB
+-----END PUBLIC KEY-----
+"#;
+
 #[derive(thiserror::Error, Debug, Serialize, Deserialize)]
 pub enum AttestationError {
     #[error("Transport error: {0}")]
@@ -29,6 +42,8 @@ pub enum AttestationError {
     Encoding(String),
     #[error("Invalid arguments: {0}")]
     InvalidArguments(String),
+    #[error("Crypto error: {0}")]
+    Crypto(String),
 }
 
 impl From<IoError> for AttestationError {
@@ -70,6 +85,12 @@ impl From<base64::DecodeError> for AttestationError {
 impl From<u16> for AttestationError {
     fn from(response_code: u16) -> Self {
         AttestationError::IAS(response_code)
+    }
+}
+
+impl From<ErrorStack> for AttestationError {
+    fn from(err: ErrorStack) -> Self {
+        AttestationError::Crypto(format!("OpenSSL error: {}", err))
     }
 }
 
@@ -303,6 +324,15 @@ impl TryFrom<AttestationResponse> for AttestationReport {
     type Error = AttestationError;
 
     fn try_from(raw: AttestationResponse) -> Result<Self, AttestationError> {
+        let ias_key = PKey::public_key_from_pem(IAS_PUBLIC_KEY_PEM.as_bytes())?;
+        let mut verifier = Verifier::new(MessageDigest::sha256(), &ias_key)?;
+        verifier.update(&raw.report)?;
+        if !verifier.verify(&raw.signature)? {
+            return Err(AttestationError::InvalidResponse(
+                "Invalid signature".to_string(),
+            ));
+        }
+
         let body: Value = serde_json::from_slice(&raw.report)?;
         Ok(AttestationReport {
             id: unwrap_body(&body["id"], true)?.unwrap(),
