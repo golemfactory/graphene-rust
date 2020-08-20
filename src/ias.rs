@@ -7,11 +7,9 @@ use hyper_tls::HttpsConnector;
 use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use sgx_types::{sgx_epid_group_id_t as SgxGid, sgx_measurement_t};
+use sgx_types::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
 use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
-
-use crate::SgxQuote;
 
 const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
 const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
@@ -124,7 +122,7 @@ impl IasClient {
     /// Get signature revocation list for a given EPID group ID.
     pub async fn get_sigrl(
         &self,
-        gid: &SgxGid,
+        gid: &SgxEpidGroupId,
         api_key: &str,
     ) -> Result<Option<Vec<u8>>, AttestationError> {
         let uri = format!(
@@ -245,12 +243,12 @@ impl AttestationReport {
         allow_outdated: bool,
         nonce: Option<String>,
         report_data: Option<&[u8]>,
-        mrenclave: Option<sgx_measurement_t>,
-        mrsigner: Option<sgx_measurement_t>,
+        mrenclave: Option<SgxMeasurement>,
+        mrsigner: Option<SgxMeasurement>,
         isv_prod_id: Option<u16>,
         isv_svn: Option<u16>,
     ) -> Result<bool, AttestationError> {
-        let quote = SgxQuote::from_bytes(base64::decode(&self.isv_enclave_quote_body)?)?;
+        let quote = SgxQuote::from_bytes(&base64::decode(&self.isv_enclave_quote_body)?)?;
 
         if !self.isv_enclave_quote_status.eq_ignore_ascii_case("OK")
             && !(allow_outdated
@@ -266,31 +264,31 @@ impl AttestationReport {
         }
 
         if let Some(user_data) = report_data {
-            if !quote.quote.report_body.report_data.d.starts_with(user_data) {
+            if !quote.body.report_body.report_data.starts_with(user_data) {
                 return Ok(false);
             }
         }
 
         if let Some(mr) = mrenclave {
-            if mr.m != quote.quote.report_body.mr_enclave.m {
+            if mr != quote.body.report_body.mr_enclave {
                 return Ok(false);
             }
         }
 
         if let Some(mr) = mrsigner {
-            if mr.m != quote.quote.report_body.mr_signer.m {
+            if mr != quote.body.report_body.mr_signer {
                 return Ok(false);
             }
         }
 
         if let Some(id) = isv_prod_id {
-            if id != quote.quote.report_body.isv_prod_id {
+            if id != quote.body.report_body.isv_prod_id {
                 return Ok(false);
             }
         }
 
         if let Some(svn) = isv_svn {
-            if svn != quote.quote.report_body.isv_svn {
+            if svn != quote.body.report_body.isv_svn {
                 return Ok(false);
             }
         }

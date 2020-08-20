@@ -1,7 +1,5 @@
-use graphene::{
-    ias::{AttestationReport, IasClient},
-    sgx_measurement_t, SgxQuote, SgxReport, SgxTargetInfo,
-};
+use graphene::ias::{AttestationReport, IasClient};
+use sgx_types::sgx::{SgxMeasurement, SgxQuote, SgxReport, SgxTargetInfo};
 use std::{convert::TryFrom, env, fs, io};
 
 fn read_line(prompt: &str) -> Option<String> {
@@ -16,13 +14,13 @@ fn read_line(prompt: &str) -> Option<String> {
     None
 }
 
-fn read_mr(prompt: &str) -> Option<sgx_measurement_t> {
-    let mut mr = sgx_measurement_t::default();
+fn read_mr(prompt: &str) -> Option<SgxMeasurement> {
+    let mut mr = SgxMeasurement::default();
     let buf = read_line(prompt);
 
     if let Some(hex) = buf {
         if hex.len() > 0 {
-            hex::decode_to_slice(hex, &mut mr.m).unwrap();
+            hex::decode_to_slice(hex, &mut mr).unwrap();
             return Some(mr);
         }
     }
@@ -79,15 +77,18 @@ async fn main() {
         true => {
             println!("Executing in Graphene SGX enclave");
 
-            let target_info = SgxTargetInfo::new().unwrap();
-            println!("\nOur target_info: {}", target_info);
+            let target_info_bytes = graphene::get_target_info().unwrap();
+            let target_info = SgxTargetInfo::from_bytes(&target_info_bytes).unwrap();
+            println!("\nOur target_info: {}", &target_info);
 
-            let report = SgxReport::new(&target_info.bytes, user_data).unwrap();
-            println!("\nOur report targeted to ourself: {}", report);
+            let report_bytes = graphene::get_report(&target_info_bytes, user_data).unwrap();
+            let report = SgxReport::from_bytes(&report_bytes).unwrap();
+            println!("\nOur report targeted to ourself: {}", &report);
 
-            let quote = SgxQuote::new(user_data).unwrap();
-            println!("\nOur quote: {}", quote);
-            fs::write("quote", &quote.bytes).unwrap();
+            let quote_bytes = graphene::get_quote(user_data).unwrap();
+            let quote = SgxQuote::from_bytes(&quote_bytes).unwrap();
+            println!("\nOur quote: {}", &quote);
+            fs::write("quote", &quote_bytes).unwrap();
         }
     }
 }
