@@ -1,6 +1,6 @@
 [package]
 name = "graphene_api"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Rafał Wojdyła <omeg@invisiblethingslab.com>"]
 edition = "2018"
 
@@ -23,6 +23,6 @@ hyper-tls = "0.4"
 openssl = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sgx_types = "1.1"
-tokio = {version = "0.2", features = ["rt-threaded", "macros"]}
+sgx-types = { git = "https://github.com/golemfactory/sgx-types.git" }
+tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
 thiserror = "1.0"
