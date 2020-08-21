@@ -7,6 +7,7 @@ use hyper_tls::HttpsConnector;
 use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+pub use sgx_types::ias::AttestationResponse;
 use sgx_types::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
 use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
@@ -208,18 +209,11 @@ impl IasClient {
             body.write_all(&chunk?)?;
         }
 
-        AttestationResponse::from_response(resp.headers(), body)
+        create_response(resp.headers(), body)
     }
 }
 
-/// Raw bytes of IAS report and signature
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AttestationResponse {
-    pub report: Vec<u8>,
-    pub signature: Vec<u8>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttestationReport {
     pub id: String,
     pub timestamp: String,
@@ -388,14 +382,13 @@ fn unwrap_body(val: &Value, mandatory: bool) -> Result<Option<String>, Attestati
     }
 }
 
-impl AttestationResponse {
-    fn from_response(headers: &HeaderMap, body: Vec<u8>) -> Result<Self, AttestationError> {
-        Ok(Self {
-            report: body,
-            signature: base64::decode(
-                &unwrap_header(headers, "x-iasreport-signature", true)?.unwrap(),
-            )
+fn create_response(
+    headers: &HeaderMap,
+    body: Vec<u8>,
+) -> Result<AttestationResponse, AttestationError> {
+    Ok(AttestationResponse {
+        report: body,
+        signature: base64::decode(&unwrap_header(headers, "x-iasreport-signature", true)?.unwrap())
             .map_err(|err| AttestationError::Encoding(err.to_string()))?,
-        })
-    }
+    })
 }
