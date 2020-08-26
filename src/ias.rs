@@ -159,7 +159,7 @@ impl IasClient {
                 }
             }
         }
-
+        
         let mut sigrl = Vec::new();
         while let Some(chunk) = resp.body_mut().data().await {
             sigrl.write_all(&chunk?)?;
