@@ -6,7 +6,6 @@ use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
 use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 pub use sgx_types::ias::AttestationResponse;
 use sgx_types::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
 use std::convert::TryFrom;
@@ -159,7 +158,7 @@ impl IasClient {
                 }
             }
         }
-        
+
         let mut sigrl = Vec::new();
         while let Some(chunk) = resp.body_mut().data().await {
             sigrl.write_all(&chunk?)?;
@@ -214,6 +213,7 @@ impl IasClient {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AttestationReport {
     pub id: String,
     pub timestamp: String,
@@ -226,7 +226,9 @@ pub struct AttestationReport {
     pub platform_info_blob: Option<String>,
     pub nonce: Option<String>,
     pub epid_pseudonym: Option<String>,
+    #[serde(rename = "advisoryURL")]
     pub advisory_url: Option<String>,
+    #[serde(rename = "advisoryIDs")]
     pub advisory_ids: Option<Vec<String>>,
 }
 
@@ -291,27 +293,6 @@ impl AttestationReport {
     }
 }
 
-fn unwrap_array(val: &Value) -> Result<Option<Vec<String>>, AttestationError> {
-    match val.as_array() {
-        None => Ok(None),
-        Some(val) => {
-            let mut rv = Vec::<String>::new();
-            for el in val {
-                match el.as_str() {
-                    None => {
-                        return Err(AttestationError::InvalidResponse(format!(
-                            "missing report field: '{:?}'",
-                            val
-                        )))
-                    }
-                    Some(x) => rv.push(x.to_owned()),
-                }
-            }
-            Ok(Some(rv))
-        }
-    }
-}
-
 impl TryFrom<AttestationResponse> for AttestationReport {
     type Error = AttestationError;
 
@@ -325,24 +306,7 @@ impl TryFrom<AttestationResponse> for AttestationReport {
             ));
         }
 
-        let body: Value = serde_json::from_slice(&raw.report)?;
-        Ok(AttestationReport {
-            id: unwrap_body(&body["id"], true)?.unwrap(),
-            timestamp: unwrap_body(&body["timestamp"], true)?.unwrap(),
-            version: body["version"].as_u64().map(|x| x as u16).ok_or(
-                AttestationError::InvalidResponse("missing report field: 'version'".to_string()),
-            )?,
-            isv_enclave_quote_status: unwrap_body(&body["isvEnclaveQuoteStatus"], true)?.unwrap(),
-            isv_enclave_quote_body: unwrap_body(&body["isvEnclaveQuoteBody"], true)?.unwrap(),
-            revocation_reason: unwrap_body(&body["revocationReason"], false)?,
-            pse_manifest_status: unwrap_body(&body["pseManifestStatus"], false)?,
-            pse_manifest_hash: unwrap_body(&body["pseManifestHash"], false)?,
-            platform_info_blob: unwrap_body(&body["platformInfoBlob"], false)?,
-            nonce: unwrap_body(&body["nonce"], false)?,
-            epid_pseudonym: unwrap_body(&body["epidPseudonym"], false)?,
-            advisory_url: unwrap_body(&body["advisoryURL"], false)?,
-            advisory_ids: unwrap_array(&body["advisoryIDs"])?,
-        })
+        Ok(serde_json::from_slice(&raw.report)?)
     }
 }
 
@@ -358,22 +322,6 @@ fn unwrap_header(
                 Err(AttestationError::InvalidResponse(format!(
                     "missing header: '{}'",
                     header_name
-                )))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-}
-
-fn unwrap_body(val: &Value, mandatory: bool) -> Result<Option<String>, AttestationError> {
-    match val.as_str() {
-        Some(val) => Ok(Some(val.to_owned())),
-        None => {
-            if mandatory {
-                Err(AttestationError::InvalidResponse(format!(
-                    "missing report field: '{}'",
-                    val
                 )))
             } else {
                 Ok(None)

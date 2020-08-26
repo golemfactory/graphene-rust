@@ -1,5 +1,6 @@
 pub use sgx_types::sgx::SgxTargetInfo;
 use sgx_types::sgx::{self};
+
 use std::io::{Error, ErrorKind, Result};
 use std::{fs, mem, path::Path};
 
@@ -45,7 +46,7 @@ pub fn get_report(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Vec<u8>>
 pub fn get_quote(user_data: &[u8]) -> Result<Vec<u8>> {
     fs::write(
         GRAPHENE_USER_DATA_PATH,
-        sgx::expand_report_data(user_data)?.as_ref()
+        sgx::expand_report_data(user_data)?.as_ref(),
     )?;
     Ok(fs::read(GRAPHENE_QUOTE_PATH)?)
 }
