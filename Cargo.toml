@@ -1,16 +1,8 @@
 [package]
-name = "graphene_api"
+name = "graphene"
 version = "0.2.0"
 authors = ["Rafał Wojdyła <omeg@invisiblethingslab.com>"]
 edition = "2018"
-
-[lib]
-name = "graphene"
-path = "src/lib.rs"
-
-[[bin]]
-name = "graphene_test"
-path = "src/bin.rs"
 
 [dependencies]
 anyhow = "1.0"
