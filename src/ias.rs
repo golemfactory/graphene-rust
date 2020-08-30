@@ -28,7 +28,7 @@ tQIDAQAB
 -----END PUBLIC KEY-----
 "#;
 
-#[derive(thiserror::Error, Debug, Serialize, Deserialize)]
+#[derive(thiserror::Error, Debug)]
 pub enum AttestationError {
     #[error("Transport error: {0}")]
     Transport(String),
@@ -41,54 +41,33 @@ pub enum AttestationError {
     #[error("Invalid arguments: {0}")]
     InvalidArguments(String),
     #[error("Crypto error: {0}")]
-    Crypto(String),
+    Crypto(#[from] ErrorStack),
 }
 
-impl From<IoError> for AttestationError {
-    fn from(err: IoError) -> Self {
-        AttestationError::Transport(err.to_string())
-    }
+macro_rules! map_error {
+    ($($type:ty => $error:path)*) => {
+        $(
+            impl From<$type> for AttestationError {
+                fn from(err: $type) -> Self {
+                    $error(err.to_string())
+                }
+            }
+        )*
+    };
 }
 
-impl From<HyperError> for AttestationError {
-    fn from(err: HyperError) -> Self {
-        AttestationError::Transport(err.to_string())
-    }
-}
-
-impl From<HttpError> for AttestationError {
-    fn from(err: HttpError) -> Self {
-        AttestationError::Transport(err.to_string())
-    }
-}
-
-impl From<ToStrError> for AttestationError {
-    fn from(err: ToStrError) -> Self {
-        AttestationError::Encoding(err.to_string())
-    }
-}
-
-impl From<serde_json::Error> for AttestationError {
-    fn from(err: serde_json::Error) -> Self {
-        AttestationError::Encoding(err.to_string())
-    }
-}
-
-impl From<base64::DecodeError> for AttestationError {
-    fn from(err: base64::DecodeError) -> Self {
-        AttestationError::InvalidResponse(err.to_string())
-    }
+map_error! {
+    IoError => AttestationError::Transport
+    HyperError => AttestationError::Transport
+    HttpError => AttestationError::Transport
+    ToStrError => AttestationError::Encoding
+    serde_json::Error => AttestationError::Encoding
+    base64::DecodeError => AttestationError::InvalidResponse
 }
 
 impl From<u16> for AttestationError {
     fn from(response_code: u16) -> Self {
         AttestationError::IAS(response_code)
-    }
-}
-
-impl From<ErrorStack> for AttestationError {
-    fn from(err: ErrorStack) -> Self {
-        AttestationError::Crypto(format!("OpenSSL error: {}", err))
     }
 }
 
