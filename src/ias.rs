@@ -1,3 +1,4 @@
+use crate::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
 use anyhow::Result;
 use http::{header::ToStrError, Error as HttpError};
 use hyper::body::HttpBody as _;
@@ -6,8 +7,6 @@ use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
 use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
 use serde::{Deserialize, Serialize};
-pub use sgx_types::ias::AttestationResponse;
-use sgx_types::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
 use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
 
@@ -69,6 +68,14 @@ impl From<u16> for AttestationError {
     fn from(response_code: u16) -> Self {
         AttestationError::IAS(response_code)
     }
+}
+
+/// Raw bytes of IAS report and signature
+#[derive(Clone, Debug)]
+//#[cfg_attr(feature = "with-serde", derive(Serialize, Deserialize))]
+pub struct AttestationResponse {
+    pub report: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 pub struct IasClient {
