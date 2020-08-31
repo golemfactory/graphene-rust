@@ -1,5 +1,5 @@
 use std::io::{Error, ErrorKind, Result};
-use std::{fs, mem, path::Path};
+use std::{fs, path::Path};
 
 use crate::sgx::{self, SgxTargetInfo};
 
@@ -25,7 +25,7 @@ pub fn get_target_info() -> Result<Vec<u8>> {
 /// `user_data` will be included in the report's `report_data` field
 /// (max 64 bytes, will be padded with zeros if shorter).
 pub fn get_report(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Vec<u8>> {
-    if target_info_bytes.len() != mem::size_of::<SgxTargetInfo>() {
+    if target_info_bytes.len() != SgxTargetInfo::size_raw() {
         return Err(Error::from(ErrorKind::InvalidInput));
     }
 

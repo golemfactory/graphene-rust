@@ -4,6 +4,8 @@ use std::fmt::{self, Debug, Formatter};
 use std::io::{Cursor, Error, ErrorKind, Read, Result};
 use std::mem;
 
+use crate::graphene;
+
 // Enclave Flags Bit Masks
 pub const SGX_FLAGS_INITTED: u64 = 0x0000_0000_0000_0001;
 pub const SGX_FLAGS_DEBUG: u64 = 0x0000_0000_0000_0002;
@@ -63,6 +65,7 @@ impl_struct! {
         pub reserved2: [u8; 8],
         pub config_id: SgxConfigId,
         pub reserved3: [u8; 384],
+        bytes: Vec<u8>,
     }
 
     pub struct SgxReportBody {
@@ -149,15 +152,32 @@ impl Debug for SgxTargetInfo {
     }
 }
 
+impl AsRef<[u8]> for SgxTargetInfo {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Into<Vec<u8>> for SgxTargetInfo {
+    fn into(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
 impl SgxTargetInfo {
+    pub fn size_raw() -> usize {
+        offset_of!(SgxTargetInfo, bytes)
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != mem::size_of::<Self>() {
+        if bytes.len() != SgxTargetInfo::size_raw() {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
         let mut reader = Cursor::new(bytes);
         let mut info = Self::default();
 
+        info.bytes = bytes.to_owned();
         reader.read_exact(&mut info.mr_enclave)?;
         info.attributes.flags = reader.read_u64::<LittleEndian>()?;
         info.attributes.xfrm = reader.read_u64::<LittleEndian>()?;
@@ -169,6 +189,10 @@ impl SgxTargetInfo {
         reader.read_exact(&mut info.reserved3)?;
 
         Ok(info)
+    }
+
+    pub fn from_enclave() -> Result<Self> {
+        SgxTargetInfo::from_bytes(&graphene::get_target_info()?)
     }
 }
 
