@@ -7,16 +7,14 @@ macro_rules! __item {
 
 #[macro_export]
 macro_rules! impl_struct {
-    ($($(#[$attr:meta])* pub struct $s:ident { $(pub $name:ident: $field:ty,)* })*) => ($(
+    ($($(#[$attr:meta])* pub struct $s:ident { $($v:vis $name:ident: $field:ty,)* })*) => ($(
         $crate::__item! {
             #[repr(C)]
             $(#[$attr])*
             pub struct $s {
-                $(pub $name: $field,)*
+                $($v $name: $field,)*
             }
         }
-
-        impl Copy for $s {}
 
         impl Clone for $s {
             fn clone(&self) -> $s {
@@ -34,4 +32,11 @@ macro_rules! impl_struct {
             }
         }
     )*)
+}
+
+#[macro_export]
+macro_rules! offset_of {
+    ($ty:ty, $field:ident) => {
+        unsafe { &(*(0 as *const $ty)).$field as *const _ as usize }
+    };
 }
