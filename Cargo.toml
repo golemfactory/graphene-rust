@@ -4,6 +4,10 @@ version = "0.2.0"
 authors = ["Rafał Wojdyła <omeg@invisiblethingslab.com>"]
 edition = "2018"
 
+[features]
+default = []
+verbose = []
+
 [dependencies]
 anyhow = "1.0"
 base64 = "0.11"
