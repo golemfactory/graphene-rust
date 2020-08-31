@@ -91,6 +91,7 @@ impl_struct! {
         pub body: SgxReportBody,
         pub key_id: SgxKeyId,
         pub mac: SgxMac,
+        bytes: Vec<u8>,
     }
 
     pub struct SgxQuoteBody {
@@ -107,8 +108,8 @@ impl_struct! {
 
 pub struct SgxQuote {
     pub body: SgxQuoteBody,
-    pub signature_len: u32,
     pub signature: Option<Vec<u8>>,
+    bytes: Vec<u8>,
 }
 
 pub const SGX_HASH_SIZE: usize = 32;
@@ -147,7 +148,11 @@ impl Debug for SgxTargetInfo {
         writeln!(f, "reserved2        : {}", hex::encode(self.reserved2))?;
         write!(f, "config_id        : {}", hex::encode(&self.config_id[..]))?;
         #[cfg(feature = "verbose")]
-        write!(f, "reserved3        : {}", hex::encode(&self.reserved3[..]))?;
+        write!(
+            f,
+            "\nreserved3        : {}",
+            hex::encode(&self.reserved3[..])
+        )?;
         Ok(())
     }
 }
@@ -166,7 +171,7 @@ impl Into<Vec<u8>> for SgxTargetInfo {
 
 impl SgxTargetInfo {
     pub fn size_raw() -> usize {
-        offset_of!(SgxTargetInfo, bytes)
+        offset_of!(Self, bytes)
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
@@ -201,7 +206,7 @@ impl Debug for SgxReportBody {
         writeln!(f, " cpu_svn          : {}", hex::encode(self.cpu_svn))?;
         writeln!(f, " misc_select      : {:02x}", self.misc_select)?;
         #[cfg(feature = "verbose")]
-        writeln!(f, " reserved1        : {:02x?}", self.reserved1)?;
+        writeln!(f, " reserved1        : {}", hex::encode(self.reserved1))?;
         writeln!(
             f,
             " isv_ext_prod_id  : {}",
@@ -239,7 +244,12 @@ impl Debug for SgxReportBody {
 }
 
 impl SgxReportBody {
-    pub fn from_reader<T: Read>(reader: &mut T) -> Result<Self> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < mem::size_of::<SgxReportBody>() {
+            return Err(Error::from(ErrorKind::InvalidData));
+        }
+
+        let mut reader = Cursor::new(bytes);
         let mut body = SgxReportBody::default();
 
         reader.read_exact(&mut body.cpu_svn)?;
@@ -272,16 +282,34 @@ impl Debug for SgxReport {
     }
 }
 
+impl AsRef<[u8]> for SgxReport {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Into<Vec<u8>> for SgxReport {
+    fn into(self) -> Vec<u8> {
+        self.bytes
+    }
+}
+
 impl SgxReport {
+    pub fn size_raw() -> usize {
+        offset_of!(Self, bytes)
+    }
+
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != mem::size_of::<Self>() {
+        if bytes.len() != SgxReport::size_raw() {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
         let mut reader = Cursor::new(bytes);
         let mut report = Self::default();
 
-        report.body = SgxReportBody::from_reader(&mut reader)?;
+        report.bytes = bytes.to_owned();
+        report.body = SgxReportBody::from_bytes(bytes)?;
+        reader.set_position(mem::size_of::<SgxReportBody>() as u64);
         reader.read_exact(&mut report.key_id)?;
         reader.read_exact(&mut report.mac)?;
 
@@ -304,7 +332,24 @@ impl Debug for SgxQuote {
         writeln!(f, "xeid              : {:04x}", self.body.xeid)?;
         writeln!(f, "basename          : {}", hex::encode(self.body.basename))?;
         writeln!(f, "report_body       :\n{:?}", self.body.report_body)?;
-        write!(f, "signature_len     : {:04x}", self.signature_len)
+        if let Some(sig) = &self.signature {
+            write!(f, "signature_len     : {:04x}", sig.len())?;
+            #[cfg(feature = "verbose")]
+            write!(f, "\nsignature         : {}", hex::encode(sig))?;
+        }
+        Ok(())
+    }
+}
+
+impl AsRef<[u8]> for SgxQuote {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl Into<Vec<u8>> for SgxQuote {
+    fn into(self) -> Vec<u8> {
+        self.bytes
     }
 }
 
@@ -313,7 +358,6 @@ impl SgxQuote {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let quote_size = bytes.len();
 
-        // `SgxQuoteBody` is packed so we can do the math below.
         // IAS quotes lack the `signature_len` and `signature` fields (they are SgxQuoteBody).
         let min_size = mem::size_of::<SgxQuoteBody>();
 
@@ -331,21 +375,20 @@ impl SgxQuote {
         body.pce_svn = reader.read_u16::<LittleEndian>()?;
         body.xeid = reader.read_u32::<LittleEndian>()?;
         reader.read_exact(&mut body.basename)?;
-        body.report_body = SgxReportBody::from_reader(&mut reader)?;
+        body.report_body = SgxReportBody::from_bytes(&bytes[reader.position() as usize..])?;
+        reader.set_position(min_size as u64);
 
         if quote_size == min_size {
             // IAS quote, no signature
             return Ok(SgxQuote {
                 body: body,
-                signature_len: 0,
                 signature: None,
+                bytes: bytes.to_owned(),
             });
         } else {
             let sig_len = reader.read_u32::<LittleEndian>()?;
 
-            if quote_size
-                != mem::size_of::<SgxQuoteBody>() + mem::size_of::<u32>() + sig_len as usize
-            {
+            if quote_size != min_size + mem::size_of::<u32>() + sig_len as usize {
                 return Err(Error::from(ErrorKind::InvalidData));
             }
 
@@ -353,8 +396,8 @@ impl SgxQuote {
             reader.read_exact(&mut sig)?;
             Ok(SgxQuote {
                 body: body,
-                signature_len: sig_len,
                 signature: Some(sig),
+                bytes: bytes.to_owned(),
             })
         }
     }
