@@ -77,18 +77,15 @@ async fn main() {
         true => {
             println!("Executing in Graphene SGX enclave");
 
-            let target_info_bytes = graphene::get_target_info().unwrap();
-            let target_info = SgxTargetInfo::from_bytes(&target_info_bytes).unwrap();
+            let target_info = SgxTargetInfo::from_enclave().unwrap();
             println!("\nOur target_info: {:?}", &target_info);
 
-            let report_bytes = graphene::get_report(&target_info_bytes, user_data).unwrap();
-            let report = SgxReport::from_bytes(&report_bytes).unwrap();
+            let report = SgxReport::from_enclave(target_info.as_ref(), user_data).unwrap();
             println!("\nOur report targeted to ourself: {:?}", &report);
 
-            let quote_bytes = graphene::get_quote(user_data).unwrap();
-            let quote = SgxQuote::from_bytes(&quote_bytes).unwrap();
+            let quote = SgxQuote::from_enclave(user_data).unwrap();
             println!("\nOur quote: {:?}", &quote);
-            fs::write("quote", &quote_bytes).unwrap();
+            fs::write("quote", quote.as_ref()).unwrap();
         }
     }
 }

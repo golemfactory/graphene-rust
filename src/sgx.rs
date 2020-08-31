@@ -175,7 +175,7 @@ impl SgxTargetInfo {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != SgxTargetInfo::size_raw() {
+        if bytes.len() != Self::size_raw() {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
@@ -197,7 +197,7 @@ impl SgxTargetInfo {
     }
 
     pub fn from_enclave() -> Result<Self> {
-        SgxTargetInfo::from_bytes(&graphene::get_target_info()?)
+        Self::from_bytes(&graphene::get_target_info()?)
     }
 }
 
@@ -245,12 +245,12 @@ impl Debug for SgxReportBody {
 
 impl SgxReportBody {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < mem::size_of::<SgxReportBody>() {
+        if bytes.len() < mem::size_of::<Self>() {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
         let mut reader = Cursor::new(bytes);
-        let mut body = SgxReportBody::default();
+        let mut body = Self::default();
 
         reader.read_exact(&mut body.cpu_svn)?;
         body.misc_select = reader.read_u32::<LittleEndian>()?;
@@ -300,7 +300,7 @@ impl SgxReport {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != SgxReport::size_raw() {
+        if bytes.len() != Self::size_raw() {
             return Err(Error::from(ErrorKind::InvalidData));
         }
 
@@ -314,6 +314,10 @@ impl SgxReport {
         reader.read_exact(&mut report.mac)?;
 
         Ok(report)
+    }
+
+    pub fn from_enclave(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Self> {
+        Self::from_bytes(&graphene::get_report(target_info_bytes, user_data)?)
     }
 }
 
@@ -380,7 +384,7 @@ impl SgxQuote {
 
         if quote_size == min_size {
             // IAS quote, no signature
-            return Ok(SgxQuote {
+            return Ok(Self {
                 body: body,
                 signature: None,
                 bytes: bytes.to_owned(),
@@ -394,11 +398,15 @@ impl SgxQuote {
 
             let mut sig = vec![0; sig_len as usize];
             reader.read_exact(&mut sig)?;
-            Ok(SgxQuote {
+            Ok(Self {
                 body: body,
                 signature: Some(sig),
                 bytes: bytes.to_owned(),
             })
         }
+    }
+
+    pub fn from_enclave(user_data: &[u8]) -> Result<Self> {
+        Self::from_bytes(&graphene::get_quote(user_data)?)
     }
 }
