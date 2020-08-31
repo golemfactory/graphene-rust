@@ -1,11 +1,16 @@
-use crate::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote};
-use anyhow::Result;
+use crate::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG};
+use anyhow::{anyhow, Result};
 use http::{header::ToStrError, Error as HttpError};
 use hyper::body::HttpBody as _;
 use hyper::header::HeaderMap;
 use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
 use hyper_tls::HttpsConnector;
-use openssl::{error::ErrorStack, hash::MessageDigest, pkey::PKey, sign::Verifier};
+use openssl::{
+    error::ErrorStack,
+    hash::{Hasher, MessageDigest},
+    pkey::PKey,
+    sign::Verifier,
+};
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::io::{Error as IoError, Write};
@@ -27,7 +32,7 @@ tQIDAQAB
 -----END PUBLIC KEY-----
 "#;
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Clone, Debug)]
 pub enum AttestationError {
     #[error("Transport error: {0}")]
     Transport(String),
@@ -71,26 +76,205 @@ impl From<u16> for AttestationError {
 }
 
 /// Raw bytes of IAS report and signature
-#[derive(Clone, Debug)]
-//#[cfg_attr(feature = "with-serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttestationResponse {
     pub report: Vec<u8>,
     pub signature: Vec<u8>,
 }
 
+impl AttestationResponse {
+    pub fn new(report: &[u8], signature: &[u8]) -> Self {
+        AttestationResponse {
+            report: report.to_owned(),
+            signature: signature.to_owned(),
+        }
+    }
+
+    pub fn verifier(self) -> AttestationVerifier {
+        let mut valid = true;
+        let rep = AttestationReport::try_from(&self);
+
+        let mut verifier = AttestationVerifier {
+            evidence: self,
+            report: {
+                if !rep.is_ok() {
+                    valid = false;
+                }
+                rep.clone().unwrap_or_default()
+            },
+            hasher: Hasher::new(MessageDigest::sha512()).unwrap(),
+            valid: valid,
+            quote: if valid {
+                let decoded = base64::decode(&rep.unwrap().isv_enclave_quote_body);
+                match decoded {
+                    Ok(val) => SgxQuote::from_bytes(&val).unwrap_or_default(),
+                    Err(_) => {
+                        valid = false;
+                        SgxQuote::default()
+                    }
+                }
+            } else {
+                valid = false;
+                SgxQuote::default()
+            },
+        };
+        verifier.valid = valid;
+        verifier
+    }
+}
+
+pub struct AttestationVerifier {
+    evidence: AttestationResponse,
+    report: AttestationReport,
+    quote: SgxQuote,
+    hasher: Hasher,
+    valid: bool,
+}
+
+impl AttestationVerifier {
+    pub fn data(mut self, data: &[u8]) -> Self {
+        if self.valid {
+            // don't update validity, only check it at the end of verification since
+            // this can be chained
+            self.hasher.update(data).unwrap();
+        }
+        self
+    }
+
+    pub fn nonce(mut self, nonce: &str) -> Self {
+        if self.valid && self.report.nonce.as_deref() != Some(nonce) {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn mr_enclave(mut self, mr: SgxMeasurement) -> Self {
+        if self.valid && mr != self.quote.body.report_body.mr_enclave {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn mr_signer(mut self, mr: SgxMeasurement) -> Self {
+        if self.valid && mr != self.quote.body.report_body.mr_signer {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn isv_prod_id(mut self, id: u16) -> Self {
+        if self.valid && id != self.quote.body.report_body.isv_prod_id {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn isv_svn(mut self, svn: u16) -> Self {
+        if self.valid && svn != self.quote.body.report_body.isv_svn {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn not_outdated(mut self) -> Self {
+        if self.valid
+            && self
+                .report
+                .isv_enclave_quote_status
+                .eq_ignore_ascii_case("OK")
+        {
+            return self;
+        }
+
+        if self.valid
+            && self
+                .report
+                .isv_enclave_quote_status
+                .eq_ignore_ascii_case("GROUP_OUT_OF_DATE")
+        {
+            self.valid = false;
+        }
+        self
+    }
+
+    pub fn not_debug(mut self) -> Self {
+        if self.valid && self.quote.body.report_body.attributes.flags & SGX_FLAGS_DEBUG != 0 {
+            self.valid = false;
+        }
+        self
+    }
+
+    fn check_sig(&self) -> Result<()> {
+        let ias_key = PKey::public_key_from_pem(IAS_PUBLIC_KEY_PEM.as_bytes())?;
+        let mut verifier = Verifier::new(MessageDigest::sha256(), &ias_key)?;
+        verifier.update(&self.evidence.report)?;
+        if !verifier.verify(&self.evidence.signature)? {
+            return Err(anyhow!("Invalid IAS signature"));
+        }
+        Ok(())
+    }
+
+    pub fn check(mut self) -> bool {
+        if !self.valid {
+            return false;
+        }
+
+        if !self.check_sig().is_ok() {
+            return false;
+        }
+
+        // GROUP_OUT_OF_DATE is allowed unless filtered out by `not_outdated()`
+        if !self
+            .report
+            .isv_enclave_quote_status
+            .eq_ignore_ascii_case("OK")
+            && !self
+                .report
+                .isv_enclave_quote_status
+                .eq_ignore_ascii_case("GROUP_OUT_OF_DATE")
+        {
+            return false;
+        }
+
+        let hash = self.hasher.finish().unwrap();
+        if !self
+            .quote
+            .body
+            .report_body
+            .report_data
+            .starts_with(hash.as_ref())
+        {
+            return false;
+        }
+        true
+    }
+}
+
 pub struct IasClient {
     https_client: Client<HttpsConnector<HttpConnector>>,
     production: bool,
+    api_key: String,
 }
 
 impl IasClient {
     /// Initialize IAS client.
     /// If `production` is true, use production API endpoints.
-    pub fn new(production: bool) -> Self {
+    pub fn new(production: bool, api_key: &str) -> Self {
         Self {
             https_client: Client::builder().build::<_, hyper::Body>(HttpsConnector::new()),
             production: production,
+            api_key: api_key.to_owned(),
         }
+    }
+
+    /// Initialize IAS client with production API endpoints.
+    pub fn production(api_key: &str) -> Self {
+        IasClient::new(true, api_key)
+    }
+
+    /// Initialize IAS client with development API endpoints.
+    pub fn develop(api_key: &str) -> Self {
+        IasClient::new(false, api_key)
     }
 
     fn uri(&self, suffix: &str) -> String {
@@ -109,7 +293,6 @@ impl IasClient {
     pub async fn get_sigrl(
         &self,
         gid: &SgxEpidGroupId,
-        api_key: &str,
     ) -> Result<Option<Vec<u8>>, AttestationError> {
         let uri = format!(
             "{}{:02x}{:02x}{:02x}{:02x}",
@@ -121,7 +304,7 @@ impl IasClient {
         );
 
         let req = Request::get(uri)
-            .header("Ocp-Apim-Subscription-Key", api_key)
+            .header("Ocp-Apim-Subscription-Key", &self.api_key)
             .body(Body::empty())?;
 
         let mut resp = self.https_client.request(req).await?;
@@ -157,7 +340,6 @@ impl IasClient {
     pub async fn verify_attestation_evidence(
         &self,
         quote: &[u8],
-        api_key: &str,
         nonce: Option<String>,
     ) -> Result<AttestationResponse, AttestationError> {
         let uri = self.uri(REPORT_PATH);
@@ -180,7 +362,7 @@ impl IasClient {
 
         let req = Request::post(uri)
             .header("Content-type", "application/json")
-            .header("Ocp-Apim-Subscription-Key", api_key)
+            .header("Ocp-Apim-Subscription-Key", &self.api_key)
             .body(Body::from(body))?;
 
         let mut resp = self.https_client.request(req).await?;
@@ -198,7 +380,7 @@ impl IasClient {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationReport {
     pub id: String,
@@ -218,80 +400,10 @@ pub struct AttestationReport {
     pub advisory_ids: Option<Vec<String>>,
 }
 
-impl AttestationReport {
-    /// Verify contents of an attestation report.
-    pub fn verify(
-        &self,
-        allow_outdated: bool,
-        nonce: Option<String>,
-        report_data: Option<&[u8]>,
-        mrenclave: Option<SgxMeasurement>,
-        mrsigner: Option<SgxMeasurement>,
-        isv_prod_id: Option<u16>,
-        isv_svn: Option<u16>,
-    ) -> Result<bool, AttestationError> {
-        let quote = SgxQuote::from_bytes(&base64::decode(&self.isv_enclave_quote_body)?)?;
-
-        if !self.isv_enclave_quote_status.eq_ignore_ascii_case("OK")
-            && !(allow_outdated
-                && self
-                    .isv_enclave_quote_status
-                    .eq_ignore_ascii_case("GROUP_OUT_OF_DATE"))
-        {
-            return Ok(false);
-        }
-
-        if self.nonce.as_deref() != nonce.as_deref() {
-            return Ok(false);
-        }
-
-        if let Some(user_data) = report_data {
-            if !quote.body.report_body.report_data.starts_with(user_data) {
-                return Ok(false);
-            }
-        }
-
-        if let Some(mr) = mrenclave {
-            if mr != quote.body.report_body.mr_enclave {
-                return Ok(false);
-            }
-        }
-
-        if let Some(mr) = mrsigner {
-            if mr != quote.body.report_body.mr_signer {
-                return Ok(false);
-            }
-        }
-
-        if let Some(id) = isv_prod_id {
-            if id != quote.body.report_body.isv_prod_id {
-                return Ok(false);
-            }
-        }
-
-        if let Some(svn) = isv_svn {
-            if svn != quote.body.report_body.isv_svn {
-                return Ok(false);
-            }
-        }
-
-        Ok(true)
-    }
-}
-
-impl TryFrom<AttestationResponse> for AttestationReport {
+impl TryFrom<&AttestationResponse> for AttestationReport {
     type Error = AttestationError;
 
-    fn try_from(raw: AttestationResponse) -> Result<Self, AttestationError> {
-        let ias_key = PKey::public_key_from_pem(IAS_PUBLIC_KEY_PEM.as_bytes())?;
-        let mut verifier = Verifier::new(MessageDigest::sha256(), &ias_key)?;
-        verifier.update(&raw.report)?;
-        if !verifier.verify(&raw.signature)? {
-            return Err(AttestationError::InvalidResponse(
-                "Invalid signature".to_string(),
-            ));
-        }
-
+    fn try_from(raw: &AttestationResponse) -> Result<Self, AttestationError> {
         Ok(serde_json::from_slice(&raw.report)?)
     }
 }
