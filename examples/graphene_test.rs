@@ -30,44 +30,59 @@ fn read_mr(prompt: &str) -> Option<SgxMeasurement> {
 
 #[tokio::main]
 async fn main() {
-    let user_data = &[0xde, 0xad, 0xc0, 0xde];
+    let data1 = &[0xde, 0xad, 0xc0, 0xde];
+    let data2 = &[0xca, 0xfe, 0xba, 0xbe];
+
     match graphene::is_graphene_enclave() {
         false => {
             println!("Executing outside of Graphene-SGX");
             if std::path::Path::new("quote").exists() {
-                let ias = IasClient::new(false);
                 let quote = fs::read("quote").unwrap();
                 let ias_api_key = env::var("IAS_API_KEY");
                 match ias_api_key {
                     Ok(key) => {
-                        let nonce = read_line("IAS nonce");
-                        let response = ias
-                            .verify_attestation_evidence(&quote, &key, nonce.clone())
+                        let ias = IasClient::develop(&key);
+                        let nonce_opt = read_line("IAS nonce");
+                        let evidence = ias
+                            .verify_attestation_evidence(&quote, nonce_opt.to_owned())
                             .await
                             .unwrap();
-                        fs::write("ias-report", &response.report).unwrap();
-                        fs::write("ias-sig", &response.signature).unwrap();
-                        let report = AttestationReport::try_from(response).unwrap();
+                        fs::write("ias-report", &evidence.report).unwrap();
+                        fs::write("ias-sig", &evidence.signature).unwrap();
 
-                        println!(
-                            "IAS report: {:?}, verify: {}",
-                            &report,
-                            report
-                                .verify(
-                                    true, // allow_outdated
-                                    nonce,
-                                    Some(user_data),
-                                    read_mr("expected mr_enclave"),
-                                    read_mr("expected mr_signer"),
-                                    read_line("expected isv_prod_id")
-                                        .map(|x| x.parse::<u16>().unwrap()),
-                                    read_line("expected isv_svn")
-                                        .map(|x| x.parse::<u16>().unwrap()),
-                                )
-                                .unwrap()
-                        );
+                        let report = AttestationReport::try_from(&evidence).unwrap();
+
+                        let mut verifier = evidence
+                            .verifier()
+                            //.not_outdated()
+                            //.not_debug()
+                            .data(data1)
+                            .data(data2);
+
+                        if let Some(nonce) = nonce_opt {
+                            verifier = verifier.nonce(&nonce);
+                        }
+
+                        if let Some(mr) = read_mr("expected mr_enclave") {
+                            verifier = verifier.mr_enclave(mr);
+                        }
+
+                        if let Some(mr) = read_mr("expected mr_signer") {
+                            verifier = verifier.mr_signer(mr);
+                        }
+
+                        if let Some(line) = read_line("expected isv_prod_id") {
+                            verifier = verifier.isv_prod_id(line.parse::<u16>().unwrap());
+                        }
+
+                        if let Some(line) = read_line("expected isv_svn") {
+                            verifier = verifier.isv_svn(line.parse::<u16>().unwrap());
+                        }
+
+                        println!("IAS report: {:?}, verifY: {}", &report, verifier.check());
+
                         let gid = [0x00, 0x00, 0x0b, 0x39];
-                        let sigrl = ias.get_sigrl(&gid, &key).await.unwrap();
+                        let sigrl = ias.get_sigrl(&gid).await.unwrap();
                         println!("SigRL for {:?}: {:?}", &gid, &sigrl);
                     }
                     Err(_) => println!("IAS_API_KEY variable not set"),
@@ -80,10 +95,10 @@ async fn main() {
             let target_info = SgxTargetInfo::from_enclave().unwrap();
             println!("\nOur target_info: {:?}", &target_info);
 
-            let report = SgxReport::from_enclave(target_info.as_ref(), user_data).unwrap();
+            let report = SgxReport::from_enclave(target_info.as_ref(), data1).unwrap();
             println!("\nOur report targeted to ourself: {:?}", &report);
 
-            let quote = SgxQuote::from_enclave(user_data).unwrap();
+            let quote = SgxQuote::hasher().data(data1).data(data2).build().unwrap();
             println!("\nOur quote: {:?}", &quote);
             fs::write("quote", quote.as_ref()).unwrap();
         }

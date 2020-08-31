@@ -1,5 +1,6 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use hex;
+use openssl::hash::{Hasher, MessageDigest};
 use std::fmt::{self, Debug, Formatter};
 use std::io::{Cursor, Error, ErrorKind, Read, Result};
 use std::mem;
@@ -106,6 +107,7 @@ impl_struct! {
     }
 }
 
+#[derive(Default)]
 pub struct SgxQuote {
     pub body: SgxQuoteBody,
     pub signature: Option<Vec<u8>>,
@@ -408,5 +410,26 @@ impl SgxQuote {
 
     pub fn from_enclave(user_data: &[u8]) -> Result<Self> {
         Self::from_bytes(&graphene::get_quote(user_data)?)
+    }
+
+    pub fn hasher() -> QuoteHasher {
+        QuoteHasher {
+            hasher: Hasher::new(MessageDigest::sha512()).unwrap(), // this really shouldn't fail
+        }
+    }
+}
+
+pub struct QuoteHasher {
+    hasher: Hasher,
+}
+
+impl QuoteHasher {
+    pub fn data(mut self, data: &[u8]) -> Self {
+        self.hasher.update(data).unwrap();
+        self
+    }
+
+    pub fn build(mut self) -> Result<SgxQuote> {
+        SgxQuote::from_enclave(self.hasher.finish()?.as_ref())
     }
 }
