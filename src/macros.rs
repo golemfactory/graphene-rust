@@ -40,3 +40,16 @@ macro_rules! offset_of {
         unsafe { &(*(0 as *const $ty)).$field as *const _ as usize }
     };
 }
+
+#[macro_export]
+macro_rules! map_error {
+    ($($type:ty => $error:path)*) => {
+        $(
+            impl From<$type> for AttestationError {
+                fn from(err: $type) -> Self {
+                    $error(err.to_string())
+                }
+            }
+        )*
+    };
+}
