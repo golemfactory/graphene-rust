@@ -1,10 +1,5 @@
-use crate::sgx::{SgxEpidGroupId, SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG};
+use crate::sgx::{SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG};
 use anyhow::{anyhow, Result};
-use http::{header::ToStrError, Error as HttpError};
-use hyper::body::HttpBody as _;
-use hyper::header::HeaderMap;
-use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
-use hyper_tls::HttpsConnector;
 use openssl::{
     error::ErrorStack,
     hash::{Hasher, MessageDigest},
@@ -13,12 +8,196 @@ use openssl::{
 };
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
-use std::io::{Error as IoError, Write};
+use std::io::Error as IoError;
 
-const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
-const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
-const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
-const REPORT_PATH: &str = "/attestation/v4/report";
+#[cfg(feature = "ias")]
+pub mod online {
+    use super::*;
+    use crate::sgx::SgxEpidGroupId;
+    use http::{header::ToStrError, Error as HttpError};
+    use hyper::body::HttpBody as _;
+    use hyper::header::HeaderMap;
+    use hyper::{client::HttpConnector, Body, Client, Error as HyperError, Request};
+    use hyper_tls::HttpsConnector;
+    use std::io::Write;
+
+    const BASE_URI_DEV: &str = "https://api.trustedservices.intel.com/sgx/dev";
+    const BASE_URI_PROD: &str = "https://api.trustedservices.intel.com/sgx";
+    const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
+    const REPORT_PATH: &str = "/attestation/v4/report";
+
+    map_error! {
+        HyperError => AttestationError::Transport
+        HttpError => AttestationError::Transport
+        ToStrError => AttestationError::Encoding
+    }
+
+    pub struct IasClient {
+        https_client: Client<HttpsConnector<HttpConnector>>,
+        production: bool,
+        api_key: String,
+    }
+
+    impl IasClient {
+        /// Initialize IAS client.
+        /// If `production` is true, use production API endpoints.
+        pub fn new(production: bool, api_key: &str) -> Self {
+            Self {
+                https_client: Client::builder().build::<_, hyper::Body>(HttpsConnector::new()),
+                production: production,
+                api_key: api_key.to_owned(),
+            }
+        }
+
+        /// Initialize IAS client with production API endpoints.
+        pub fn production(api_key: &str) -> Self {
+            IasClient::new(true, api_key)
+        }
+
+        /// Initialize IAS client with development API endpoints.
+        pub fn develop(api_key: &str) -> Self {
+            IasClient::new(false, api_key)
+        }
+
+        fn uri(&self, suffix: &str) -> String {
+            format!(
+                "{}{}",
+                if self.production {
+                    BASE_URI_PROD
+                } else {
+                    BASE_URI_DEV
+                },
+                suffix
+            )
+        }
+
+        /// Get signature revocation list for a given EPID group ID.
+        pub async fn get_sigrl(
+            &self,
+            gid: &SgxEpidGroupId,
+        ) -> Result<Option<Vec<u8>>, AttestationError> {
+            let uri = format!(
+                "{}{:02x}{:02x}{:02x}{:02x}",
+                self.uri(SIGRL_PATH),
+                gid[0],
+                gid[1],
+                gid[2],
+                gid[3]
+            );
+
+            let req = Request::get(uri)
+                .header("Ocp-Apim-Subscription-Key", &self.api_key)
+                .body(Body::empty())?;
+
+            let mut resp = self.https_client.request(req).await?;
+
+            match resp.status().as_u16() {
+                200 => (),
+                //404 => return Ok(None), // this actually means that there is no such gid
+                _ => return Err(resp.status().as_u16().into()),
+            }
+
+            match resp.headers().get("content-length") {
+                None => {
+                    return Err(AttestationError::InvalidResponse(
+                        "Missing content-length".to_string(),
+                    ))
+                }
+                Some(val) => {
+                    if val == "0" {
+                        return Ok(None); // no sigrl for this gid
+                    }
+                }
+            }
+
+            let mut sigrl = Vec::new();
+            while let Some(chunk) = resp.body_mut().data().await {
+                sigrl.write_all(&chunk?)?;
+            }
+
+            Ok(Some(sigrl))
+        }
+
+        /// Get IAS verification report and signature for an SGX enclave quote.
+        pub async fn verify_attestation_evidence(
+            &self,
+            quote: &[u8],
+            nonce: Option<String>,
+        ) -> Result<AttestationResponse, AttestationError> {
+            let uri = self.uri(REPORT_PATH);
+            let quote_base64 = base64::encode(&quote);
+            let body = match nonce {
+                Some(nonce) => {
+                    if nonce.len() > 32 {
+                        return Err(AttestationError::InvalidArguments(
+                            "Nonce too long".to_string(),
+                        ));
+                    }
+
+                    serde_json::to_string(&AttestationRequest {
+                        nonce: Some(nonce),
+                        isv_enclave_quote: quote_base64,
+                    })?
+                }
+                None => serde_json::to_string(&AttestationRequest {
+                    nonce: None,
+                    isv_enclave_quote: quote_base64,
+                })?,
+            };
+
+            let req = Request::post(uri)
+                .header("Content-type", "application/json")
+                .header("Ocp-Apim-Subscription-Key", &self.api_key)
+                .body(Body::from(body))?;
+
+            let mut resp = self.https_client.request(req).await?;
+
+            if resp.status().as_u16() != 200 {
+                return Err(resp.status().as_u16().into());
+            }
+
+            let mut body = Vec::new();
+            while let Some(chunk) = resp.body_mut().data().await {
+                body.write_all(&chunk?)?;
+            }
+
+            create_response(resp.headers(), body)
+        }
+    }
+
+    fn unwrap_header(
+        headers: &HeaderMap,
+        header_name: &str,
+        mandatory: bool,
+    ) -> Result<Option<String>, AttestationError> {
+        match headers.get(header_name) {
+            Some(val) => Ok(Some(val.to_str()?.to_owned())),
+            None => {
+                if mandatory {
+                    Err(AttestationError::InvalidResponse(format!(
+                        "missing header: '{}'",
+                        header_name
+                    )))
+                } else {
+                    Ok(None)
+                }
+            }
+        }
+    }
+
+    fn create_response(
+        headers: &HeaderMap,
+        body: Vec<u8>,
+    ) -> Result<AttestationResponse, AttestationError> {
+        Ok(AttestationResponse {
+            report: body,
+            signature: base64::decode(
+                &unwrap_header(headers, "x-iasreport-signature", true)?.unwrap(),
+            )
+            .map_err(|err| AttestationError::Encoding(err.to_string()))?,
+        })
+    }
+}
 
 const IAS_PUBLIC_KEY_PEM: &str = r#"
 -----BEGIN PUBLIC KEY-----
@@ -48,23 +227,8 @@ pub enum AttestationError {
     Crypto(#[from] ErrorStack),
 }
 
-macro_rules! map_error {
-    ($($type:ty => $error:path)*) => {
-        $(
-            impl From<$type> for AttestationError {
-                fn from(err: $type) -> Self {
-                    $error(err.to_string())
-                }
-            }
-        )*
-    };
-}
-
 map_error! {
     IoError => AttestationError::Transport
-    HyperError => AttestationError::Transport
-    HttpError => AttestationError::Transport
-    ToStrError => AttestationError::Encoding
     serde_json::Error => AttestationError::Encoding
     base64::DecodeError => AttestationError::InvalidResponse
 }
@@ -257,139 +421,6 @@ struct AttestationRequest {
     isv_enclave_quote: String,
 }
 
-pub struct IasClient {
-    https_client: Client<HttpsConnector<HttpConnector>>,
-    production: bool,
-    api_key: String,
-}
-
-impl IasClient {
-    /// Initialize IAS client.
-    /// If `production` is true, use production API endpoints.
-    pub fn new(production: bool, api_key: &str) -> Self {
-        Self {
-            https_client: Client::builder().build::<_, hyper::Body>(HttpsConnector::new()),
-            production: production,
-            api_key: api_key.to_owned(),
-        }
-    }
-
-    /// Initialize IAS client with production API endpoints.
-    pub fn production(api_key: &str) -> Self {
-        IasClient::new(true, api_key)
-    }
-
-    /// Initialize IAS client with development API endpoints.
-    pub fn develop(api_key: &str) -> Self {
-        IasClient::new(false, api_key)
-    }
-
-    fn uri(&self, suffix: &str) -> String {
-        format!(
-            "{}{}",
-            if self.production {
-                BASE_URI_PROD
-            } else {
-                BASE_URI_DEV
-            },
-            suffix
-        )
-    }
-
-    /// Get signature revocation list for a given EPID group ID.
-    pub async fn get_sigrl(
-        &self,
-        gid: &SgxEpidGroupId,
-    ) -> Result<Option<Vec<u8>>, AttestationError> {
-        let uri = format!(
-            "{}{:02x}{:02x}{:02x}{:02x}",
-            self.uri(SIGRL_PATH),
-            gid[0],
-            gid[1],
-            gid[2],
-            gid[3]
-        );
-
-        let req = Request::get(uri)
-            .header("Ocp-Apim-Subscription-Key", &self.api_key)
-            .body(Body::empty())?;
-
-        let mut resp = self.https_client.request(req).await?;
-
-        match resp.status().as_u16() {
-            200 => (),
-            //404 => return Ok(None), // this actually means that there is no such gid
-            _ => return Err(resp.status().as_u16().into()),
-        }
-
-        match resp.headers().get("content-length") {
-            None => {
-                return Err(AttestationError::InvalidResponse(
-                    "Missing content-length".to_string(),
-                ))
-            }
-            Some(val) => {
-                if val == "0" {
-                    return Ok(None); // no sigrl for this gid
-                }
-            }
-        }
-
-        let mut sigrl = Vec::new();
-        while let Some(chunk) = resp.body_mut().data().await {
-            sigrl.write_all(&chunk?)?;
-        }
-
-        Ok(Some(sigrl))
-    }
-
-    /// Get IAS verification report and signature for an SGX enclave quote.
-    pub async fn verify_attestation_evidence(
-        &self,
-        quote: &[u8],
-        nonce: Option<String>,
-    ) -> Result<AttestationResponse, AttestationError> {
-        let uri = self.uri(REPORT_PATH);
-        let quote_base64 = base64::encode(&quote);
-        let body = match nonce {
-            Some(nonce) => {
-                if nonce.len() > 32 {
-                    return Err(AttestationError::InvalidArguments(
-                        "Nonce too long".to_string(),
-                    ));
-                }
-
-                serde_json::to_string(&AttestationRequest {
-                    nonce: Some(nonce),
-                    isv_enclave_quote: quote_base64,
-                })?
-            }
-            None => serde_json::to_string(&AttestationRequest {
-                nonce: None,
-                isv_enclave_quote: quote_base64,
-            })?,
-        };
-
-        let req = Request::post(uri)
-            .header("Content-type", "application/json")
-            .header("Ocp-Apim-Subscription-Key", &self.api_key)
-            .body(Body::from(body))?;
-
-        let mut resp = self.https_client.request(req).await?;
-
-        if resp.status().as_u16() != 200 {
-            return Err(resp.status().as_u16().into());
-        }
-
-        let mut body = Vec::new();
-        while let Some(chunk) = resp.body_mut().data().await {
-            body.write_all(&chunk?)?;
-        }
-
-        create_response(resp.headers(), body)
-    }
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationReport {
@@ -416,35 +447,4 @@ impl TryFrom<&AttestationResponse> for AttestationReport {
     fn try_from(raw: &AttestationResponse) -> Result<Self, AttestationError> {
         Ok(serde_json::from_slice(&raw.report)?)
     }
-}
-
-fn unwrap_header(
-    headers: &HeaderMap,
-    header_name: &str,
-    mandatory: bool,
-) -> Result<Option<String>, AttestationError> {
-    match headers.get(header_name) {
-        Some(val) => Ok(Some(val.to_str()?.to_owned())),
-        None => {
-            if mandatory {
-                Err(AttestationError::InvalidResponse(format!(
-                    "missing header: '{}'",
-                    header_name
-                )))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-}
-
-fn create_response(
-    headers: &HeaderMap,
-    body: Vec<u8>,
-) -> Result<AttestationResponse, AttestationError> {
-    Ok(AttestationResponse {
-        report: body,
-        signature: base64::decode(&unwrap_header(headers, "x-iasreport-signature", true)?.unwrap())
-            .map_err(|err| AttestationError::Encoding(err.to_string()))?,
-    })
 }
