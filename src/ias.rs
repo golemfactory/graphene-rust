@@ -250,6 +250,13 @@ impl AttestationVerifier {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttestationRequest {
+    nonce: Option<String>,
+    isv_enclave_quote: String,
+}
+
 pub struct IasClient {
     https_client: Client<HttpsConnector<HttpConnector>>,
     production: bool,
@@ -352,12 +359,15 @@ impl IasClient {
                     ));
                 }
 
-                format!(
-                    "{{\"isvEnclaveQuote\":\"{}\",\"nonce\":\"{}\"}}",
-                    quote_base64, nonce
-                )
+                serde_json::to_string(&AttestationRequest {
+                    nonce: Some(nonce),
+                    isv_enclave_quote: quote_base64,
+                })?
             }
-            None => format!("{{\"isvEnclaveQuote\":\"{}\"}}", quote_base64),
+            None => serde_json::to_string(&AttestationRequest {
+                nonce: None,
+                isv_enclave_quote: quote_base64,
+            })?,
         };
 
         let req = Request::post(uri)
