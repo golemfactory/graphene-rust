@@ -9,6 +9,7 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 use std::io::Error as IoError;
+use std::string::FromUtf8Error;
 
 #[cfg(feature = "ias")]
 pub mod online {
@@ -190,7 +191,7 @@ pub mod online {
         body: Vec<u8>,
     ) -> Result<AttestationResponse, AttestationError> {
         Ok(AttestationResponse {
-            report: body,
+            report: String::from_utf8(body)?,
             signature: base64::decode(
                 &unwrap_header(headers, "x-iasreport-signature", true)?.unwrap(),
             )
@@ -230,6 +231,7 @@ pub enum AttestationError {
 map_error! {
     IoError => AttestationError::Transport
     serde_json::Error => AttestationError::Encoding
+    FromUtf8Error => AttestationError::Encoding
     base64::DecodeError => AttestationError::InvalidResponse
 }
 
@@ -242,14 +244,14 @@ impl From<u16> for AttestationError {
 /// Raw bytes of IAS report and signature
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttestationResponse {
-    pub report: Vec<u8>,
+    pub report: String,
     pub signature: Vec<u8>,
 }
 
 impl AttestationResponse {
-    pub fn new(report: &[u8], signature: &[u8]) -> Self {
+    pub fn new(report: String, signature: &[u8]) -> Self {
         AttestationResponse {
-            report: report.to_owned(),
+            report: report,
             signature: signature.to_owned(),
         }
     }
@@ -371,7 +373,7 @@ impl AttestationVerifier {
     fn check_sig(&self) -> Result<()> {
         let ias_key = PKey::public_key_from_pem(IAS_PUBLIC_KEY_PEM.as_bytes())?;
         let mut verifier = Verifier::new(MessageDigest::sha256(), &ias_key)?;
-        verifier.update(&self.evidence.report)?;
+        verifier.update(&self.evidence.report.as_bytes())?;
         if !verifier.verify(&self.evidence.signature)? {
             return Err(anyhow!("Invalid IAS signature"));
         }
@@ -445,6 +447,6 @@ impl TryFrom<&AttestationResponse> for AttestationReport {
     type Error = AttestationError;
 
     fn try_from(raw: &AttestationResponse) -> Result<Self, AttestationError> {
-        Ok(serde_json::from_slice(&raw.report)?)
+        Ok(serde_json::from_str(&raw.report)?)
     }
 }
