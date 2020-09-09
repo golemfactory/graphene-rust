@@ -1,4 +1,6 @@
 use graphene::sgx::{SgxQuote, SgxReport, SgxTargetInfo};
+#[cfg(feature = "ias")]
+use graphene::Duration;
 use std::fs;
 
 const DATA1: &[u8] = &[0xde, 0xad, 0xc0, 0xde];
@@ -58,6 +60,7 @@ mod ias {
                         .verifier()
                         //.not_outdated()
                         //.not_debug()
+                        .max_age(Duration::seconds(10))
                         .data(DATA1)
                         .data(DATA2);
 
@@ -81,7 +84,7 @@ mod ias {
                         verifier = verifier.isv_svn(line.parse::<u16>().unwrap());
                     }
 
-                    println!("IAS report: {:?}, verifY: {}", &report, verifier.check());
+                    println!("IAS report: {:?}, verify: {}", &report, verifier.check());
 
                     let gid = [0x00, 0x00, 0x0b, 0x39];
                     let sigrl = ias.get_sigrl(&gid).await.unwrap();

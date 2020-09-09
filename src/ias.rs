@@ -1,5 +1,6 @@
 use crate::sgx::{SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG};
 use anyhow::{anyhow, Result};
+use chrono::{offset::Utc, DateTime, Duration};
 use openssl::{
     error::ErrorStack,
     hash::{Hasher, MessageDigest},
@@ -366,6 +367,23 @@ impl AttestationVerifier {
     pub fn not_debug(mut self) -> Self {
         if self.valid && self.quote.body.report_body.attributes.flags & SGX_FLAGS_DEBUG != 0 {
             self.valid = false;
+        }
+        self
+    }
+
+    pub fn max_age(mut self, age: Duration) -> Self {
+        if self.valid {
+            let ts = DateTime::parse_from_rfc3339(&format!("{}Z", &self.report.timestamp));
+            match ts {
+                Ok(ts) => {
+                    if ts + age < Utc::now() {
+                        self.valid = false;
+                    }
+                }
+                Err(_) => {
+                    self.valid = false;
+                }
+            }
         }
         self
     }

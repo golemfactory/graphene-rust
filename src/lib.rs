@@ -12,4 +12,6 @@ pub use crate::graphene::{
 pub use ias::{AttestationReport, AttestationResponse};
 
 #[cfg(feature = "ias")]
+pub use chrono::Duration;
+#[cfg(feature = "ias")]
 pub use ias::online::IasClient;
