@@ -1,4 +1,6 @@
-use crate::sgx::{SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG};
+use crate::sgx::{
+    SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG, SGX_FLAGS_INITTED, SGX_FLAGS_MODE64BIT,
+};
 use anyhow::{anyhow, Result};
 use chrono::{offset::Utc, DateTime, Duration};
 use openssl::{
@@ -258,49 +260,76 @@ impl AttestationResponse {
     }
 
     pub fn verifier(self) -> AttestationVerifier {
-        let mut valid = true;
+        let mut result = AttestationResult::Ok;
         let rep = AttestationReport::try_from(&self);
 
         let mut verifier = AttestationVerifier {
             evidence: self,
             report: {
                 if !rep.is_ok() {
-                    valid = false;
+                    result =
+                        AttestationResult::InvalidIasReport("Failed to parse IAS report".into());
                 }
                 rep.clone().unwrap_or_default()
             },
             hasher: Hasher::new(MessageDigest::sha512()).unwrap(),
-            valid: valid,
-            quote: if valid {
+            result: AttestationResult::Ok,
+            quote: if result.is_ok() {
                 let decoded = base64::decode(&rep.unwrap().isv_enclave_quote_body);
                 match decoded {
                     Ok(val) => SgxQuote::from_bytes(&val).unwrap_or_default(),
                     Err(_) => {
-                        valid = false;
+                        result = AttestationResult::InvalidIasReport(
+                            "Failed to decode enclave quote".into(),
+                        );
                         SgxQuote::default()
                     }
                 }
             } else {
-                valid = false;
                 SgxQuote::default()
             },
         };
-        verifier.valid = valid;
+        verifier.result = result;
         verifier
     }
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AttestationResult {
+    Ok,
+    InvalidIasReport(String),
+    InvalidMrEnclave(String),
+    InvalidMrSigner(String),
+    InvalidIsvProdId(u16),
+    InvalidIsvSvn(u16),
+    InvalidQuoteStatus(String),
+    InvalidFlags(String),
+    InvalidReportData(String),
+}
+
+impl AttestationResult {
+    pub fn is_ok(&self) -> bool {
+        self == &AttestationResult::Ok
+    }
+}
+
+const ENCLAVE_FLAGS_NEEDED: u64 = SGX_FLAGS_INITTED | SGX_FLAGS_MODE64BIT;
 
 pub struct AttestationVerifier {
     evidence: AttestationResponse,
     report: AttestationReport,
     quote: SgxQuote,
     hasher: Hasher,
-    valid: bool,
+    result: AttestationResult,
 }
 
 impl AttestationVerifier {
+    fn valid(&self) -> bool {
+        self.result.is_ok()
+    }
+
     pub fn data(mut self, data: &[u8]) -> Self {
-        if self.valid {
+        if self.valid() {
             // don't update validity, only check it at the end of verification since
             // this can be chained
             self.hasher.update(data).unwrap();
@@ -309,42 +338,47 @@ impl AttestationVerifier {
     }
 
     pub fn nonce(mut self, nonce: &str) -> Self {
-        if self.valid && self.report.nonce.as_deref() != Some(nonce) {
-            self.valid = false;
+        if self.valid() && self.report.nonce.as_deref() != Some(nonce) {
+            self.result = AttestationResult::InvalidIasReport("Invalid nonce".into());
         }
         self
     }
 
     pub fn mr_enclave(mut self, mr: SgxMeasurement) -> Self {
-        if self.valid && mr != self.quote.body.report_body.mr_enclave {
-            self.valid = false;
+        if self.valid() && mr != self.quote.body.report_body.mr_enclave {
+            self.result = AttestationResult::InvalidMrEnclave(hex::encode(
+                self.quote.body.report_body.mr_enclave,
+            ));
         }
         self
     }
 
     pub fn mr_signer(mut self, mr: SgxMeasurement) -> Self {
-        if self.valid && mr != self.quote.body.report_body.mr_signer {
-            self.valid = false;
+        if self.valid() && mr != self.quote.body.report_body.mr_signer {
+            self.result = AttestationResult::InvalidMrSigner(hex::encode(
+                self.quote.body.report_body.mr_signer,
+            ));
         }
         self
     }
 
     pub fn isv_prod_id(mut self, id: u16) -> Self {
-        if self.valid && id != self.quote.body.report_body.isv_prod_id {
-            self.valid = false;
+        if self.valid() && id != self.quote.body.report_body.isv_prod_id {
+            self.result =
+                AttestationResult::InvalidIsvProdId(self.quote.body.report_body.isv_prod_id);
         }
         self
     }
 
     pub fn isv_svn(mut self, svn: u16) -> Self {
-        if self.valid && svn != self.quote.body.report_body.isv_svn {
-            self.valid = false;
+        if self.valid() && svn != self.quote.body.report_body.isv_svn {
+            self.result = AttestationResult::InvalidIsvSvn(self.quote.body.report_body.isv_svn);
         }
         self
     }
 
     pub fn not_outdated(mut self) -> Self {
-        if self.valid
+        if self.valid()
             && self
                 .report
                 .isv_enclave_quote_status
@@ -353,58 +387,63 @@ impl AttestationVerifier {
             return self;
         }
 
-        if self.valid
+        if self.valid()
             && self
                 .report
                 .isv_enclave_quote_status
                 .eq_ignore_ascii_case("GROUP_OUT_OF_DATE")
         {
-            self.valid = false;
+            self.result = AttestationResult::InvalidQuoteStatus(
+                self.report.isv_enclave_quote_status.to_owned(),
+            );
         }
         self
     }
 
     pub fn not_debug(mut self) -> Self {
-        if self.valid && self.quote.body.report_body.attributes.flags & SGX_FLAGS_DEBUG != 0 {
-            self.valid = false;
+        if self.valid() && self.quote.body.report_body.attributes.flags & SGX_FLAGS_DEBUG != 0 {
+            self.result = AttestationResult::InvalidFlags("Enclave has DEBUG flag enabled".into());
         }
         self
     }
 
     pub fn max_age(mut self, age: Duration) -> Self {
-        if self.valid {
+        if self.valid() {
             let ts = DateTime::parse_from_rfc3339(&format!("{}Z", &self.report.timestamp));
             match ts {
                 Ok(ts) => {
                     if ts + age < Utc::now() {
-                        self.valid = false;
+                        self.result =
+                            AttestationResult::InvalidIasReport("IAS response is too old".into());
                     }
                 }
                 Err(_) => {
-                    self.valid = false;
+                    self.result =
+                        AttestationResult::InvalidIasReport("Failed to parse IAS response".into());
                 }
             }
         }
         self
     }
 
-    fn check_sig(&self) -> Result<()> {
+    fn check_sig(&mut self) -> Result<()> {
         let ias_key = PKey::public_key_from_pem(IAS_PUBLIC_KEY_PEM.as_bytes())?;
         let mut verifier = Verifier::new(MessageDigest::sha256(), &ias_key)?;
         verifier.update(&self.evidence.report.as_bytes())?;
         if !verifier.verify(&self.evidence.signature)? {
+            self.result = AttestationResult::InvalidIasReport("Invalid IAS signature".into());
             return Err(anyhow!("Invalid IAS signature"));
         }
         Ok(())
     }
 
-    pub fn check(mut self) -> bool {
-        if !self.valid {
-            return false;
+    pub fn check(mut self) -> AttestationResult {
+        if !self.valid() {
+            return self.result;
         }
 
         if !self.check_sig().is_ok() {
-            return false;
+            return self.result;
         }
 
         // GROUP_OUT_OF_DATE is allowed unless filtered out by `not_outdated()`
@@ -417,7 +456,17 @@ impl AttestationVerifier {
                 .isv_enclave_quote_status
                 .eq_ignore_ascii_case("GROUP_OUT_OF_DATE")
         {
-            return false;
+            self.result =
+                AttestationResult::InvalidQuoteStatus(self.report.isv_enclave_quote_status);
+            return self.result;
+        }
+
+        if self.quote.body.report_body.attributes.flags & ENCLAVE_FLAGS_NEEDED
+            != ENCLAVE_FLAGS_NEEDED
+        {
+            self.result =
+                AttestationResult::InvalidFlags("Enclave is not initialized or not 64bit".into());
+            return self.result;
         }
 
         let hash = self.hasher.finish().unwrap();
@@ -428,9 +477,12 @@ impl AttestationVerifier {
             .report_data
             .starts_with(hash.as_ref())
         {
-            return false;
+            self.result = AttestationResult::InvalidReportData(hex::encode(
+                &self.quote.body.report_body.report_data[..],
+            ));
+            return self.result;
         }
-        true
+        self.result
     }
 }
 

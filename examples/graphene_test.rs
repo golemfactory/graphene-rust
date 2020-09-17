@@ -84,7 +84,11 @@ mod ias {
                         verifier = verifier.isv_svn(line.parse::<u16>().unwrap());
                     }
 
-                    println!("IAS report: {:?}, verify: {}", &report, verifier.check());
+                    println!(
+                        "IAS report: {:?}\nattestation result: {:?}",
+                        &report,
+                        verifier.check(),
+                    );
 
                     let gid = [0x00, 0x00, 0x0b, 0x39];
                     let sigrl = ias.get_sigrl(&gid).await.unwrap();
