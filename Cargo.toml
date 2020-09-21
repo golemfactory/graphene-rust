@@ -1,9 +1,12 @@
 [package]
-name = "graphene"
+name = "graphene-sgx"
 version = "0.3.2"
 authors = ["Rafał Wojdyła <omeg@invisiblethingslab.com>"]
 edition = "2018"
-
+homepage = "https://github.com/golemfactory/graphene-rust"
+repository = "https://github.com/golemfactory/graphene-rust.git"
+license = "LGPL-3.0"
+description="Rust API for Graphene/SGX"
 [features]
 default = []
 verbose = []
