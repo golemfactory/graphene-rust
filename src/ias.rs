@@ -353,8 +353,26 @@ impl AttestationVerifier {
         self
     }
 
+    pub fn mr_enclave_list(mut self, mrs: &[SgxMeasurement]) -> Self {
+        if self.valid() && !mrs.contains(&self.quote.body.report_body.mr_enclave) {
+            self.result = AttestationResult::InvalidMrEnclave(hex::encode(
+                self.quote.body.report_body.mr_enclave,
+            ));
+        }
+        self
+    }
+
     pub fn mr_signer(mut self, mr: SgxMeasurement) -> Self {
         if self.valid() && mr != self.quote.body.report_body.mr_signer {
+            self.result = AttestationResult::InvalidMrSigner(hex::encode(
+                self.quote.body.report_body.mr_signer,
+            ));
+        }
+        self
+    }
+
+    pub fn mr_signer_list(mut self, mrs: &[SgxMeasurement]) -> Self {
+        if self.valid() && !mrs.contains(&self.quote.body.report_body.mr_signer) {
             self.result = AttestationResult::InvalidMrSigner(hex::encode(
                 self.quote.body.report_body.mr_signer,
             ));
