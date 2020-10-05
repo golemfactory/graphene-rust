@@ -1,3 +1,6 @@
+//! Macro definitions.
+
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __item {
     ($i:item) => {
@@ -5,14 +8,20 @@ macro_rules! __item {
     };
 }
 
+/// Converts struct definition into a C-compatible one.
+/// `repr(C)` is added, as well as bitwise-zero `Default` initialization and bitwise-copy `Clone`.
 #[macro_export]
 macro_rules! impl_struct {
-    ($($(#[$attr:meta])* pub struct $s:ident { $($v:vis $name:ident: $field:ty,)* })*) => ($(
+    ($($(#[$outer_meta:meta])* pub struct $s:ident {
+        $(
+            $(#[$inner_meta:meta])* $v:vis $name:ident: $field:ty,
+        )*
+    })*) => ($(
         $crate::__item! {
             #[repr(C)]
-            $(#[$attr])*
+            $(#[$outer_meta])*
             pub struct $s {
-                $($v $name: $field,)*
+                $($(#[$inner_meta])* $v $name: $field,)*
             }
         }
 
@@ -34,6 +43,7 @@ macro_rules! impl_struct {
     )*)
 }
 
+/// Computes offset of a struct field, in bytes.
 #[macro_export]
 macro_rules! offset_of {
     ($ty:ty, $field:ident) => {
@@ -41,8 +51,9 @@ macro_rules! offset_of {
     };
 }
 
+/// Implements `From` an error type for `AttestationError`.
 #[macro_export]
-macro_rules! map_error {
+macro_rules! map_attestation_error {
     ($($type:ty => $error:path)*) => {
         $(
             impl From<$type> for AttestationError {

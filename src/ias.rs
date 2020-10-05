@@ -1,3 +1,5 @@
+//! Attestation types and functions, IAS API.
+
 use crate::sgx::{
     SgxMeasurement, SgxQuote, SGX_FLAGS_DEBUG, SGX_FLAGS_INITTED, SGX_FLAGS_MODE64BIT,
 };
@@ -30,12 +32,13 @@ pub mod online {
     const SIGRL_PATH: &str = "/attestation/v4/sigrl/";
     const REPORT_PATH: &str = "/attestation/v4/report";
 
-    map_error! {
+    map_attestation_error! {
         HyperError => AttestationError::Transport
         HttpError => AttestationError::Transport
         ToStrError => AttestationError::Encoding
     }
 
+    /// Interface for Intel Attestation Service.
     pub struct IasClient {
         https_client: Client<HttpsConnector<HttpConnector>>,
         production: bool,
@@ -48,7 +51,7 @@ pub mod online {
         pub fn new(production: bool, api_key: &str) -> Self {
             Self {
                 https_client: Client::builder().build::<_, hyper::Body>(HttpsConnector::new()),
-                production: production,
+                production,
                 api_key: api_key.to_owned(),
             }
         }
@@ -231,7 +234,7 @@ pub enum AttestationError {
     Crypto(#[from] ErrorStack),
 }
 
-map_error! {
+map_attestation_error! {
     IoError => AttestationError::Transport
     serde_json::Error => AttestationError::Encoding
     FromUtf8Error => AttestationError::Encoding
@@ -244,21 +247,23 @@ impl From<u16> for AttestationError {
     }
 }
 
-/// Raw bytes of IAS report and signature
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Raw bytes of IAS report and signature.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AttestationResponse {
     pub report: String,
     pub signature: Vec<u8>,
 }
 
 impl AttestationResponse {
+    /// Initialize the struct.
     pub fn new(report: String, signature: &[u8]) -> Self {
         AttestationResponse {
-            report: report,
+            report,
             signature: signature.to_owned(),
         }
     }
 
+    /// Create attestation verifier from IAS response.
     pub fn verifier(self) -> AttestationVerifier {
         let mut result = AttestationResult::Ok;
         let rep = AttestationReport::try_from(&self);
@@ -308,6 +313,7 @@ pub enum AttestationResult {
 }
 
 impl AttestationResult {
+    /// Returns `true` if the attestation evidence passed all checks.
     pub fn is_ok(&self) -> bool {
         self == &AttestationResult::Ok
     }
@@ -315,6 +321,30 @@ impl AttestationResult {
 
 const ENCLAVE_FLAGS_NEEDED: u64 = SGX_FLAGS_INITTED | SGX_FLAGS_MODE64BIT;
 
+/// Attestation verifier enables easy checking of various attestation evidence properties.
+///
+/// # Example
+///```no_run
+/// use chrono::Duration;
+/// use graphene::sgx::SgxQuote;
+/// use graphene::AttestationResponse;
+///
+/// let user_data = [0u8; 42];
+/// let quote = SgxQuote::hasher()
+///     .data(&[0u8; 42])
+///     .data(&[1u8; 10])
+///     .build()
+///     .unwrap();
+/// let evidence = AttestationResponse::default(); // this should be obtained from IAS
+/// let verifier = evidence.verifier();
+/// let result = verifier.max_age(Duration::minutes(1))
+///     .data(&[0u8; 42])
+///     .data(&[1u8; 10])
+///     .mr_enclave(quote.body.report_body.mr_enclave)
+///     .isv_prod_id(42)
+///     .not_debug()
+///     .check();
+///```
 pub struct AttestationVerifier {
     evidence: AttestationResponse,
     report: AttestationReport,
@@ -328,6 +358,8 @@ impl AttestationVerifier {
         self.result.is_ok()
     }
 
+    /// Add custom data to hash. All bytes added using this method are hashed with `SHA512`
+    /// and compared with enclave quote's `report_data` field.
     pub fn data(mut self, data: &[u8]) -> Self {
         if self.valid() {
             // don't update validity, only check it at the end of verification since
@@ -337,6 +369,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check IAS report's nonce.
     pub fn nonce(mut self, nonce: &str) -> Self {
         if self.valid() && self.report.nonce.as_deref() != Some(nonce) {
             self.result = AttestationResult::InvalidIasReport("Invalid nonce".into());
@@ -344,6 +377,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's hash (must match the supplied value).
     pub fn mr_enclave(mut self, mr: SgxMeasurement) -> Self {
         if self.valid() && mr != self.quote.body.report_body.mr_enclave {
             self.result = AttestationResult::InvalidMrEnclave(hex::encode(
@@ -353,6 +387,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's hash (must match any of the supplied values).
     pub fn mr_enclave_list(mut self, mrs: &[SgxMeasurement]) -> Self {
         if self.valid() && !mrs.contains(&self.quote.body.report_body.mr_enclave) {
             self.result = AttestationResult::InvalidMrEnclave(hex::encode(
@@ -362,6 +397,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's hash of signing key (must match the supplied value).
     pub fn mr_signer(mut self, mr: SgxMeasurement) -> Self {
         if self.valid() && mr != self.quote.body.report_body.mr_signer {
             self.result = AttestationResult::InvalidMrSigner(hex::encode(
@@ -371,6 +407,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's hash of signing key (must match any of the supplied values).
     pub fn mr_signer_list(mut self, mrs: &[SgxMeasurement]) -> Self {
         if self.valid() && !mrs.contains(&self.quote.body.report_body.mr_signer) {
             self.result = AttestationResult::InvalidMrSigner(hex::encode(
@@ -380,6 +417,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's ISV product ID.
     pub fn isv_prod_id(mut self, id: u16) -> Self {
         if self.valid() && id != self.quote.body.report_body.isv_prod_id {
             self.result =
@@ -388,6 +426,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check enclave's security version number.
     pub fn isv_svn(mut self, svn: u16) -> Self {
         if self.valid() && svn != self.quote.body.report_body.isv_svn {
             self.result = AttestationResult::InvalidIsvSvn(self.quote.body.report_body.isv_svn);
@@ -395,6 +434,8 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check that enclave's IAS status is not `GROUP_OUT_OF_DATE` (platform missing security
+    /// updates).
     pub fn not_outdated(mut self) -> Self {
         if self.valid()
             && self
@@ -418,6 +459,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check that enclave is not in debug mode.
     pub fn not_debug(mut self) -> Self {
         if self.valid() && self.quote.body.report_body.attributes.flags & SGX_FLAGS_DEBUG != 0 {
             self.result = AttestationResult::InvalidFlags("Enclave has DEBUG flag enabled".into());
@@ -425,6 +467,7 @@ impl AttestationVerifier {
         self
     }
 
+    /// Check maximum age of the IAS report (using report's timestamp).
     pub fn max_age(mut self, age: Duration) -> Self {
         if self.valid() {
             let ts = DateTime::parse_from_rfc3339(&format!("{}Z", &self.report.timestamp));
@@ -455,6 +498,7 @@ impl AttestationVerifier {
         Ok(())
     }
 
+    /// Finalize all checks and convert the verifier into attestation result.
     pub fn check(mut self) -> AttestationResult {
         if !self.valid() {
             return self.result;
@@ -511,6 +555,7 @@ struct AttestationRequest {
     isv_enclave_quote: String,
 }
 
+/// IAS attestation report. See IAS API specification for details.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestationReport {
