@@ -125,6 +125,16 @@ pub type SgxMeasurement = [u8; SGX_HASH_SIZE];
 pub type SgxMac = [u8; SGX_MAC_SIZE];
 pub type SgxReportData = [u8; SGX_REPORT_DATA_SIZE];
 
+pub fn parse_measurement(hex: String) -> Result<SgxMeasurement> {
+    let mut mr = SgxMeasurement::default();
+    let data = hex::decode(hex).map_err(|_| Error::from(ErrorKind::InvalidInput))?;
+    if data.len() != mr.len() {
+        return Err(Error::from(ErrorKind::InvalidInput));
+    }
+    mr.copy_from_slice(&data);
+    Ok(mr)
+}
+
 pub fn expand_report_data(user_data: &[u8]) -> Result<SgxReportData> {
     let user_data_len = user_data.len();
     if user_data_len > SGX_REPORT_DATA_SIZE {
