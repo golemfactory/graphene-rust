@@ -1,3 +1,5 @@
+//! Graphene-specific functions.
+
 use std::io::{Error, ErrorKind, Result};
 use std::{fs, path::Path};
 
@@ -10,18 +12,18 @@ const GRAPHENE_REPORT_PATH: &str = "/dev/attestation/report";
 const GRAPHENE_QUOTE_PATH: &str = "/dev/attestation/quote";
 const GRAPHENE_PF_KEY_PATH: &str = "/dev/attestation/protected_files_key";
 
-/// Returns true if we're executing inside Graphene's SGX enclave
+/// Returns `true` if we're executing inside Graphene's SGX enclave.
 pub fn is_graphene_enclave() -> bool {
     // TODO: something more robust
     Path::new(GRAPHENE_QUOTE_PATH).exists()
 }
 
-/// Get SGX target info of the currently executing enclave.
+/// Returns SGX target info of the currently executing enclave.
 pub fn get_target_info() -> Result<Vec<u8>> {
     fs::read(GRAPHENE_OWN_TARGET_INFO_PATH)
 }
 
-/// Get SGX report of the currently executing enclave.
+/// Returns SGX report of the currently executing enclave.
 /// `user_data` will be included in the report's `report_data` field
 /// (max 64 bytes, will be padded with zeros if shorter).
 pub fn get_report(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Vec<u8>> {
@@ -37,7 +39,7 @@ pub fn get_report(target_info_bytes: &[u8], user_data: &[u8]) -> Result<Vec<u8>>
     Ok(fs::read(GRAPHENE_REPORT_PATH)?)
 }
 
-/// Get SGX quote of the currently executing enclave.
+/// Returns SGX quote of the currently executing enclave.
 /// `user_data` will be included in the quote's `report_data` field (max 64 bytes,
 /// will be padded with zeros if shorter).
 pub fn get_quote(user_data: &[u8]) -> Result<Vec<u8>> {

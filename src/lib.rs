@@ -9,7 +9,7 @@ pub use crate::graphene::{
     get_quote, get_report, get_target_info, is_graphene_enclave, set_protected_files_key,
 };
 
-pub use ias::{AttestationReport, AttestationResponse};
+pub use ias::{AttestationReport, AttestationResponse, AttestationResult, AttestationVerifier};
 
 #[cfg(feature = "ias")]
 pub use chrono::Duration;
