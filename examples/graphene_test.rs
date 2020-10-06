@@ -1,6 +1,6 @@
-use graphene::sgx::{SgxQuote, SgxReport, SgxTargetInfo};
+use graphene_sgx::sgx::{SgxQuote, SgxReport, SgxTargetInfo};
 #[cfg(feature = "ias")]
-use graphene::Duration;
+use graphene_sgx::Duration;
 use std::fs;
 
 const DATA1: &[u8] = &[0xde, 0xad, 0xc0, 0xde];
@@ -9,8 +9,8 @@ const DATA2: &[u8] = &[0xca, 0xfe, 0xba, 0xbe];
 #[cfg(feature = "ias")]
 mod ias {
     use super::*;
-    use graphene::sgx::SgxMeasurement;
-    use graphene::{AttestationReport, IasClient};
+    use graphene_sgx::sgx::SgxMeasurement;
+    use graphene_sgx::{AttestationReport, IasClient};
     use std::{convert::TryFrom, env, io};
 
     fn read_line(prompt: &str) -> Option<String> {
@@ -102,7 +102,7 @@ mod ias {
 
 #[tokio::main]
 async fn main() {
-    match graphene::is_graphene_enclave() {
+    match graphene_sgx::is_graphene_enclave() {
         false => {
             println!("Executing outside of Graphene-SGX");
             #[cfg(feature = "ias")]
