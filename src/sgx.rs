@@ -220,7 +220,7 @@ pub type SgxMac = [u8; SGX_MAC_SIZE];
 pub type SgxReportData = [u8; SGX_REPORT_DATA_SIZE];
 
 /// Parse hex string as `SgxMeasurement`.
-pub fn parse_measurement(hex: String) -> Result<SgxMeasurement> {
+pub fn parse_measurement(hex: &str) -> Result<SgxMeasurement> {
     let mut mr = SgxMeasurement::default();
     let data = hex::decode(hex).map_err(|_| Error::from(ErrorKind::InvalidInput))?;
     if data.len() != mr.len() {
@@ -565,5 +565,100 @@ impl QuoteHasher {
     /// Finalize hashing supplied data and convert the hasher into enclave quote.
     pub fn build(mut self) -> Result<SgxQuote> {
         SgxQuote::from_enclave(self.hasher.finish()?.as_ref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lazy_static::lazy_static;
+
+    const TEST_QUOTE_HEX: &str = r#"
+02000100390b00000b000a0000000000655afa33faa5b9cc5e9e241fa229
+b99400000000000000000000000000000000080effff0102000000000000
+000000000000000000000000000000000000000000000000000000000000
+00000000000007000000000000001f00000000000000f02c8db6b9219332
+c176ebb2bce4dc675a45bb7815a1bd5965eaeb064521d3d3000000000000
+0000000000000000000000000000000000000000000000000000577b180d
+bcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b2140000
+000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000
+000000002a00010000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000
+00000000000000006385ceb874d23a87cfe9f95c432074cf2a919b701715
+745696fe7b489d66f6296de87b3525e7e198c9fc24d6af3450e13c4e369a
+ad84deb1673f694a16075525a802000070cf07bd37361d5b70f2d8cce014
+9a0ba5930cb1e9912a23a2259f95b80186afcc792743a15529d8e2d4b7ba
+1306c0f0cd03bd0bc6e2eba9914353659f24355107bcca58cf07b78950ce
+b448f446b8975dfc01c65a2ff4d1ff0e68809b51105c8d25c30121d152e0
+476b24d783bb5fe8f0286379222b10e3eb0626464d99184365e935c0102a
+b7c7eee42cd3c9e06c7f1c7ec595000168b15822a6ea1a36954b12181b66
+925a97da0a57818ff6fe37a0df97020e0f4a62ac894999ac4b7d8bd5f673
+4ae45681b32d924132bbc7c0523decbd8d73db5c695d5eb34631ae098c45
+2b8c3860ecdaf93bc9860ab91f8cfb4140e8afe0f11453216eecd7b6e190
+94992229f2232438e18384d7d5c2c391a2dbd7bb7f989834ab767538c201
+2e0e631b4b398c3f9a13dd1053e79c6268010000a8d8232ee530f7310119
+beb2d88364831e28193683a46450e39fd6c718967f6897db54084a1bc6ba
+b25df7d7cd47ba00723d3b4585667661fb452f98b2ee709ab862c231829d
+ee23082b11c67653e170dab438242482c39327bd9322500ee05917cc4364
+ee96162af8bdcd550e9091e17fc1ebad1abb2c08156075dd6887804fa80c
+c532db8dd712107cc65f51e9a4df3de5e1cb0b565264a0560ff3647a3c4a
+acf804b090efecb371851e1d47a558a3420272728a78b77ecc76290b3a97
+277bb5998fbaf6a16f900881898f35ddef1be405c916972f35231b58b47c
+5163837a82cb38ac7350e76467ce2a482181c417c2ebfcd2e03e4c45bdbc
+55cbf39f9f2883cc1d783a61b71e72434c182579639cb5681c032db210f4
+894023f29f39eb0acc9a8c9e22c587e82345b50809a0fba60358a8a7fb31
+68e9725ccf7bf7f78d829b50f0e5048f84b3d6cb959fd51d09deca9fcba4
+3e3f764c7ca3c5fc7297fc1a42f4d63238d78fcaece0abb3279b4a24eeed
+bb06da84f2e8
+"#;
+
+    lazy_static! {
+        pub static ref TEST_QUOTE: Vec<u8> = hex::decode(TEST_QUOTE_HEX.replace("\n", "")).unwrap();
+    }
+
+    #[test]
+    fn target_info_size() {
+        assert_eq!(SgxTargetInfo::size_raw(), 512);
+    }
+
+    #[test]
+    fn report_size() {
+        assert_eq!(SgxReport::size_raw(), 432);
+    }
+
+    #[test]
+    fn parse_quote() {
+        let quote = SgxQuote::from_bytes(&TEST_QUOTE);
+        assert!(quote.is_ok());
+        let bad_quote_bytes = [0u8; mem::size_of::<SgxQuoteBody>() - 1]; // too small
+        assert!(!SgxQuote::from_bytes(&bad_quote_bytes).is_ok());
+    }
+
+    #[test]
+    fn parse_mr() {
+        let mr =
+            parse_measurement("f02c8db6b9219332c176ebb2bce4dc675a45bb7815a1bd5965eaeb064521d3d3");
+        assert!(mr.is_ok());
+        let mr =
+            parse_measurement("f02c8db6b9219332c176ebb2bce4dc675a45bb7815a1bd5965eaeb064521d3d");
+        assert!(!mr.is_ok());
+        let mr =
+            parse_measurement("f02c8db6b9219332c176ebb2bce4dc675a45bb7815a1bd5965eaeb064521d3d30");
+        assert!(!mr.is_ok());
+        let mr = parse_measurement("");
+        assert!(!mr.is_ok());
+        let mr = parse_measurement("zxcv");
+        assert!(!mr.is_ok());
+    }
+
+    #[test]
+    fn expand_report() {
+        assert!(expand_report_data(&[1u8; 0]).is_ok());
+        assert!(expand_report_data(&[1u8; 1]).is_ok());
+        assert!(expand_report_data(&[1u8; 63]).is_ok());
+        assert!(expand_report_data(&[1u8; 64]).is_ok());
+        assert!(!expand_report_data(&[1u8; 65]).is_ok());
     }
 }

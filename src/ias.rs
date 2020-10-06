@@ -269,6 +269,7 @@ impl AttestationResponse {
         let rep = AttestationReport::try_from(&self);
 
         let mut verifier = AttestationVerifier {
+            check_data: false,
             evidence: self,
             report: {
                 if !rep.is_ok() {
@@ -350,6 +351,7 @@ pub struct AttestationVerifier {
     report: AttestationReport,
     quote: SgxQuote,
     hasher: Hasher,
+    check_data: bool,
     result: AttestationResult,
 }
 
@@ -365,6 +367,7 @@ impl AttestationVerifier {
             // don't update validity, only check it at the end of verification since
             // this can be chained
             self.hasher.update(data).unwrap();
+            self.check_data = true;
         }
         self
     }
@@ -531,18 +534,20 @@ impl AttestationVerifier {
             return self.result;
         }
 
-        let hash = self.hasher.finish().unwrap();
-        if !self
-            .quote
-            .body
-            .report_body
-            .report_data
-            .starts_with(hash.as_ref())
-        {
-            self.result = AttestationResult::InvalidReportData(hex::encode(
-                &self.quote.body.report_body.report_data[..],
-            ));
-            return self.result;
+        if self.check_data {
+            let hash = self.hasher.finish().unwrap();
+            if !self
+                .quote
+                .body
+                .report_body
+                .report_data
+                .starts_with(hash.as_ref())
+            {
+                self.result = AttestationResult::InvalidReportData(hex::encode(
+                    &self.quote.body.report_body.report_data[..],
+                ));
+                return self.result;
+            }
         }
         self.result
     }
@@ -581,5 +586,220 @@ impl TryFrom<&AttestationResponse> for AttestationReport {
 
     fn try_from(raw: &AttestationResponse) -> Result<Self, AttestationError> {
         Ok(serde_json::from_str(&raw.report)?)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sgx::parse_measurement;
+    use lazy_static::lazy_static;
+
+    const IAS_REPORT: &str = r#"{"nonce":"some nonce","id":"31209355433493617787376776503240433872","timestamp":"2020-10-06T08:52:53.347575","version":4,"epidPseudonym":"Itmg0J96ogakfocRkBJTgQpKMR/vxHuzGzjBc4e7MOLi5YFG7MpdPvxc4ig9Kwr5JSCzB/LFoRC35Pns2g+hqHHSO67EJ7kJw8FBUSnYYWxOrJn/RnKPO/V9NyLL04KOYnFZG6WJR8ocK/TmHv9IhX0VvBHuOzuwlHV6eJk075Y=","advisoryURL":"https://security-center.intel.com","advisoryIDs":["INTEL-SA-00161","INTEL-SA-00320","INTEL-SA-00329","INTEL-SA-00220","INTEL-SA-00270","INTEL-SA-00293","INTEL-SA-00233"],"isvEnclaveQuoteStatus":"GROUP_OUT_OF_DATE","platformInfoBlob":"1502006504000900000F0F02040101070000000000000000000B00000B000000020000000000000B398400622A16A0D18310FE44F83C3759D80D9A509ADF3A9E3DF8912C35236289A76C9A02E31CBF7EC9BBE866A4C2B14976AF5F1F2F67432A910CAC8F9F1B2E443D","isvEnclaveQuoteBody":"AgABADkLAAALAAoAAAAAAGVa+jP6pbnMXp4kH6IpuZQAAAAAAAAAAAAAAAAAAAAACBD//wECAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwAAAAAAAAAfAAAAAAAAAIn9CW9E4gK8MNf1FfUWauX3xTcHygIXbNBzU+wynQBOAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABXexgNvNrje9nyZEQYnjunithb0DUVvyb1xEVcUoSyFAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACoAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABjhc64dNI6h8/p+VxDIHTPKpGbcBcVdFaW/ntInWb2KW3oezUl5+GYyfwk1q80UOE8TjaarYTesWc/aUoWB1Ul"}"#;
+    const IAS_SIG_HEX: &str = r#"
+31fb8c591d9d4d4f71611c9f829a889be5c19857da86036181de37f966ea
+26838f57bfb197da250d609443956b93771dbf1f29921c83698eb4c593ba
+e26f4a428e3fe62811ec83b0fb1e3626103487f961630961842aed567d9a
+3b6778b8e2bd03d889b97d6b985a65058bbebd63022c4bb162ad045bfd55
+b86fb6fc9c4e19cfaff6c5503b6e1a49c58da10ad2fea7b2332c94129b5c
+01495b021bf7af1db7c504d1ae4f26b4894aa45104734ac9eb16cd438b80
+cb24c0b0757dbb05ebccfe8d2d72c223564c0a66227fe4c07a58dac93272
+2d81969f95d424b372b64ead2d697388dfa0da21fe5f99ec13171bd12f2c
+40e238ae25805879bd11f0c4267d3b5a
+"#;
+
+    lazy_static! {
+        pub static ref IAS_SIG: Vec<u8> = hex::decode(IAS_SIG_HEX.replace("\n", "")).unwrap();
+        pub static ref EVIDENCE: AttestationResponse =
+            AttestationResponse::new(IAS_REPORT.to_owned(), &IAS_SIG);
+    }
+
+    #[test]
+    fn verify_simple() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        assert!(verifier.check().is_ok());
+    }
+
+    #[test]
+    fn verify_data() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier
+            .data(&[0xde, 0xad, 0xc0, 0xde])
+            .data(&[0xca, 0xfe, 0xba, 0xbe])
+            .check();
+        assert!(result.is_ok());
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier
+            .data(&[0xde, 0xad, 0xc0, 0xde])
+            .data(&[0xca, 0xfe, 0xba, 0xba])
+            .check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_nonce() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.nonce("some nonce").check();
+        assert!(result.is_ok());
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.nonce("some bad nonce").check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_mrenclave() {
+        let mr =
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004e")
+                .unwrap();
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_enclave(mr).check();
+        assert!(result.is_ok());
+
+        let mr =
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004f")
+                .unwrap();
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_enclave(mr).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_mrenclave_list() {
+        let mrs = vec![
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004e")
+                .unwrap(),
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004f")
+                .unwrap(),
+        ];
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_enclave_list(&mrs).check();
+        assert!(result.is_ok());
+
+        let mrs = vec![
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004d")
+                .unwrap(),
+            parse_measurement("89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004f")
+                .unwrap(),
+        ];
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_enclave_list(&mrs).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_mrsigner() {
+        let mr =
+            parse_measurement("577b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap();
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_signer(mr).check();
+        assert!(result.is_ok());
+
+        let mr =
+            parse_measurement("477b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap();
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_signer(mr).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_mrsigner_list() {
+        let mrs = vec![
+            parse_measurement("577b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap(),
+            parse_measurement("477b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap(),
+        ];
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_signer_list(&mrs).check();
+        assert!(result.is_ok());
+
+        let mrs = vec![
+            parse_measurement("377b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap(),
+            parse_measurement("477b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214")
+                .unwrap(),
+        ];
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.mr_signer_list(&mrs).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_isvprodid() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.isv_prod_id(42).check();
+        assert!(result.is_ok());
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.isv_prod_id(0).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_isvsvn() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.isv_svn(1).check();
+        assert!(result.is_ok());
+
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.isv_svn(0).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_outdated() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.not_outdated().check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_debug() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.not_debug().check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_age() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier.max_age(Duration::minutes(1)).check();
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn verify_all() {
+        let verifier = EVIDENCE.to_owned().verifier();
+        let result = verifier
+            .data(&[0xde, 0xad, 0xc0, 0xde])
+            .data(&[0xca, 0xfe, 0xba, 0xbe])
+            .nonce("some nonce")
+            .mr_enclave(
+                parse_measurement(
+                    "89fd096f44e202bc30d7f515f5166ae5f7c53707ca02176cd07353ec329d004e",
+                )
+                .unwrap(),
+            )
+            .mr_signer(
+                parse_measurement(
+                    "577b180dbcdae37bd9f26444189e3ba78ad85bd03515bf26f5c4455c5284b214",
+                )
+                .unwrap(),
+            )
+            .isv_prod_id(42)
+            .isv_svn(1)
+            .check();
+        assert!(result.is_ok());
     }
 }
