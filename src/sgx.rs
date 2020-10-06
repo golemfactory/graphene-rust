@@ -531,7 +531,7 @@ impl SgxQuote {
     ///
     /// # Examples
     /// ```no_run
-    /// use graphene::sgx::SgxQuote;
+    /// use graphene_sgx::sgx::SgxQuote;
     ///
     /// let quote = SgxQuote::hasher()
     ///     .data(&[0u8; 42])
