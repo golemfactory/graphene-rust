@@ -25,3 +25,5 @@ thiserror = "1.0"
 
 [dev-dependencies]
 tokio = { version = "0.2", features = ["rt-threaded", "macros"] }
+lazy_static = { version = "1.4" }
+
