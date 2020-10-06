@@ -327,8 +327,8 @@ const ENCLAVE_FLAGS_NEEDED: u64 = SGX_FLAGS_INITTED | SGX_FLAGS_MODE64BIT;
 /// # Example
 ///```no_run
 /// use chrono::Duration;
-/// use graphene::sgx::SgxQuote;
-/// use graphene::AttestationResponse;
+/// use graphene_sgx::sgx::SgxQuote;
+/// use graphene_sgx::AttestationResponse;
 ///
 /// let quote = SgxQuote::hasher()
 ///     .data(&[0u8; 42])
