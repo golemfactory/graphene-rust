@@ -330,7 +330,6 @@ const ENCLAVE_FLAGS_NEEDED: u64 = SGX_FLAGS_INITTED | SGX_FLAGS_MODE64BIT;
 /// use graphene::sgx::SgxQuote;
 /// use graphene::AttestationResponse;
 ///
-/// let user_data = [0u8; 42];
 /// let quote = SgxQuote::hasher()
 ///     .data(&[0u8; 42])
 ///     .data(&[1u8; 10])
