@@ -10,3 +10,8 @@ Cargo.lock
 **/*.rs.bk
 .idea
 
+# SGX test files
+/graphene_test*
+/ias-report
+/ias-sig
+/quote
