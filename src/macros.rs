@@ -43,14 +43,6 @@ macro_rules! impl_struct {
     )*)
 }
 
-/// Computes offset of a struct field, in bytes.
-#[macro_export]
-macro_rules! offset_of {
-    ($ty:ty, $field:ident) => {
-        unsafe { &(*(0 as *const $ty)).$field as *const _ as usize }
-    };
-}
-
 /// Implements `From` an error type for `AttestationError`.
 #[macro_export]
 macro_rules! map_attestation_error {

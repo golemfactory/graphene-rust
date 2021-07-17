@@ -1,6 +1,7 @@
 //! SGX constants and types.
 
 use byteorder::{LittleEndian, ReadBytesExt};
+use field_offset::offset_of;
 use hex;
 use openssl::hash::{Hasher, MessageDigest};
 use std::fmt::{self, Debug, Formatter};
@@ -280,7 +281,7 @@ impl Into<Vec<u8>> for SgxTargetInfo {
 impl SgxTargetInfo {
     /// Returns size of the native SGX target info struct.
     pub fn size_raw() -> usize {
-        offset_of!(Self, bytes)
+        offset_of!(Self => bytes).get_byte_offset()
     }
 
     /// Returns target info deserialized from native representation.
@@ -409,7 +410,7 @@ impl Into<Vec<u8>> for SgxReport {
 impl SgxReport {
     /// Returns size of the native SGX report struct.
     pub fn size_raw() -> usize {
-        offset_of!(Self, bytes)
+        offset_of!(Self => bytes).get_byte_offset()
     }
 
     /// Returns report deserialized from native representation.
