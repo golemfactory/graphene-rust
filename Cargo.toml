@@ -1,6 +1,6 @@
 [package]
 name = "graphene-sgx"
-version = "0.4.0"
+version = "0.3.3"
 authors = ["Rafał Wojdyła <omeg@invisiblethingslab.com>"]
 description = "Rust API for Graphene/SGX"
 homepage = "https://github.com/golemfactory/graphene-rust"
